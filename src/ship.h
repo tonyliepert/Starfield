@@ -1,11 +1,13 @@
 // ship.h - the ship, seen from a chase camera above and behind it.
 //
 // An original design: a broad silver-white saucer for the crew, ringed with
-// lit windows and with a red beacon blinking on top, a tapered delta spine
-// running aft and broad swept wings, rising like a manta's, carrying two long
-// cylindrical engine pods high at their tips. The pods have pointed nose
-// cones, glowing exhausts trailing luminous ion streams, and rings of light
-// flashing one after another from front to back, all brighter at warp.
+// lit windows, a raised dome on top ringed with windows and a red beacon
+// blinking on it, a tapered delta spine running aft to two red tail lights
+// that blink with the beacon, and broad, smoothly streamlined swept wings,
+// rising like a manta's, carrying two long cylindrical engine pods high at
+// their tips. The pods have pointed nose cones, glowing exhausts trailing
+// luminous ion streams, and rings of light flashing one after another from
+// front to back, all brighter at warp.
 //
 // The camera looks where it always has, riding along with the ship, which
 // flies a little ahead of it and below its line of sight. It is drawn into
@@ -106,7 +108,8 @@ void main() {
         glow = vec3(0.35, 0.7, 1.0) * (0.12 + flash * (3.5 + 3.5 * uEngine));
         base *= 0.3;
     } else if (mat == 6) {
-        // The beacon on top of the saucer: a short bright red flash each second.
+        // The beacon on top of the saucer and the tail lights: a short bright
+        // red flash each second.
         float since = fract(uTime * 0.95);
         glow = vec3(0.75, 0.0, 0.0) * (0.3 + 9.0 * exp(-since * 7.0));
         base = vec3(0.3, 0.0, 0.0);
@@ -120,6 +123,16 @@ void main() {
         shine = 0.6;
     }
     base *= mix(0.82, 1.0, panels(vModel));
+    // A ring of windows round the side of the raised dome on top.
+    if (mat == 0 && vModel.y > 0.03) {
+        float r = length(vModel.xz - vec2(0.0, 0.2));
+        if (r < 0.12 && abs(vModel.y - 0.113) < 0.006) {
+            float ang = atan(vModel.x, vModel.z - 0.2);
+            float w = step(0.6, fract(ang * 24.0 / 6.2831853));
+            glow += vec3(1.0, 0.88, 0.65) * w * 1.3;
+            base *= 1.0 - 0.45 * w;
+        }
+    }
 
     float diff = max(dot(n, uLightDir), 0.0);
     vec3 h = normalize(uLightDir + v);
@@ -179,9 +192,9 @@ static void ShipBlock(const float (*c)[3], float m)
     }
 }
 
-// A surface turned about an axis parallel to y through (0, zc): a profile of
+// A surface turned about an axis parallel to y through (xc, zc): a profile of
 // (radius, height) points, each span with its own material.
-static void ShipLathe(const float (*prof)[2], const int* mats, int count, float zc, int sides)
+static void ShipLathe(const float (*prof)[2], const int* mats, int count, float zc, int sides, float xc = 0.0f)
 {
     for (int i = 0; i + 1 < count; i++) {
         float dr = prof[i + 1][0] - prof[i][0], dy = prof[i + 1][1] - prof[i][1];
@@ -190,7 +203,7 @@ static void ShipLathe(const float (*prof)[2], const int* mats, int count, float 
         for (int k = 0; k < sides; k++) {
             float a0 = 6.2831853f * k / sides, a1 = 6.2831853f * (k + 1) / sides;
             auto at = [&](int pi, float a, float* out) {
-                out[0] = prof[pi][0] * sinf(a);
+                out[0] = xc + prof[pi][0] * sinf(a);
                 out[1] = prof[pi][1];
                 out[2] = zc + prof[pi][0] * cosf(a);
             };
@@ -254,6 +267,44 @@ static void ShipPod(float x, float y, float z0, float z1, float r)
     }
 }
 
+// A streamlined strut between two airfoil sections (x, y, front z, back z),
+// thicker at the root than the tip, with smooth normals.
+static void ShipStrut(const float* root, const float* tip, float rootThick, float tipThick)
+{
+    const int spans = 10, around = 20;
+    // Thickness runs at right angles to the span, in the x-y plane.
+    float sx = tip[0] - root[0], sy = tip[1] - root[1], sl = sqrtf(sx * sx + sy * sy);
+    float tx = -sy / sl, ty = sx / sl;
+    auto at = [&](int i, int j, float* p, float* n) {
+        float f = (float)i / spans, a = 6.2831853f * j / around;
+        float cx = root[0] + (tip[0] - root[0]) * f, cy = root[1] + (tip[1] - root[1]) * f;
+        float zf = root[2] + (tip[2] - root[2]) * f, zb = root[3] + (tip[3] - root[3]) * f;
+        float cz = (zf + zb) * 0.5f, half = (zf - zb) * 0.5f;
+        float thick = rootThick + (tipThick - rootThick) * f;
+        // An airfoil: blunt at the front, fine at the back.
+        float c = cosf(a), sn = sinf(a);
+        float t = thick * sn * (c > 0 ? 1.0f : 0.55f + 0.45f * (1 + c));
+        p[0] = cx + tx * t;
+        p[1] = cy + ty * t;
+        p[2] = cz + half * c;
+        float nx = c / half, nt = sn / thick;
+        n[0] = tx * nt;
+        n[1] = ty * nt;
+        n[2] = nx;
+        Flight::Normalize(n);
+    };
+    for (int i = 0; i < spans; i++)
+        for (int j = 0; j < around; j++) {
+            float p00[3], p01[3], p10[3], p11[3], n00[3], n01[3], n10[3], n11[3];
+            at(i, j, p00, n00);
+            at(i, j + 1, p01, n01);
+            at(i + 1, j, p10, n10);
+            at(i + 1, j + 1, p11, n11);
+            ShipTri(p00, p10, p11, n00, n10, n11, kHull);
+            ShipTri(p00, p11, p01, n00, n11, n01, kHull);
+        }
+}
+
 static void BuildShip()
 {
     if (!g_shipMesh.empty()) return;
@@ -274,6 +325,13 @@ static void BuildShip()
     const int beaconMats[] = {kBeacon, kBeacon, kBeacon};
     ShipLathe(beacon, beaconMats, 4, 0.2f, 16);
 
+    // Two small red tail lights side by side on the aft tip of the spine,
+    // flashing with the beacon.
+    const float tail[][2] = {{0.0f, -0.0105f}, {0.0032f, -0.0117f}, {0.0045f, -0.015f}, {0.0032f, -0.0183f}, {0.0f, -0.0195f}};
+    const int tailMats[] = {kBeacon, kBeacon, kBeacon, kBeacon};
+    ShipLathe(tail, tailMats, 5, -0.502f, 16, -0.022f);
+    ShipLathe(tail, tailMats, 5, -0.502f, 16, 0.022f);
+
     // The delta spine, tapering aft from beneath the saucer.
     const float spine[8][3] = {
         {-0.04f, -0.03f, -0.5f}, {0.04f, -0.03f, -0.5f}, {0.04f, 0.0f, -0.5f}, {-0.04f, 0.0f, -0.5f},
@@ -291,13 +349,11 @@ static void BuildShip()
     const float podX = kPodX, podY = kPodY, podR = kPodR;
     for (int side = -1; side <= 1; side += 2) {
         float s = (float)side;
-        const float wing[8][3] = {
-            {s * 0.05f, -0.016f, -0.5f}, {s * (podX - 0.02f), podY - 0.012f, -0.72f},
-            {s * (podX - 0.02f), podY + 0.004f, -0.72f}, {s * 0.05f, 0.006f, -0.5f},
-            {s * 0.08f, -0.03f, 0.05f}, {s * (podX - 0.02f), podY - 0.012f, -0.3f},
-            {s * (podX - 0.02f), podY + 0.004f, -0.3f}, {s * 0.08f, 0.012f, 0.05f},
-        };
-        ShipBlock(wing, kHull);
+        // Root: along the spine, from just behind the saucer to its tail.
+        // Tip: buried in the pod. Each is an airfoil, rounded all round.
+        const float root[4] = {s * 0.065f, -0.008f, 0.05f, -0.5f};   // x, y, front z, back z
+        const float tip[4] = {s * (podX - 0.015f), podY - 0.004f, -0.3f, -0.72f};
+        ShipStrut(root, tip, 0.017f, 0.009f);
         ShipPod(s * podX, podY, kPodBack, -0.12f, podR);
     }
 }

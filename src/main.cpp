@@ -6,7 +6,8 @@
 // faint nebulae. Passing close to a star, the ship is pulled round by its
 // gravity and changes course; if it comes very close, the ship drops out of
 // warp, circles twice round a planet of that star and flies on. The star may
-// be a red giant, a yellow star, a brown dwarf or a neutron star, and the
+// be a red giant, a yellow star, a brown dwarf, a neutron star, or a red
+// giant with a neutron star pulling a stream of gas off it, and the
 // planet any of ten kinds, each a little different every time.
 //
 // Command line (standard screensaver protocol):
@@ -381,13 +382,36 @@ float noise(vec3 p) {
 
 float fbm(vec3 p) {
     float s = 0.0, a = 0.5;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 10; i++) {
         if (i >= uOctaves) break;
         s += a * noise(p);
         p = p * 2.03 + vec3(1.7, 9.2, 3.1);
         a *= 0.5;
     }
     return s;
+}
+
+// Small-scale relief, for fine detail and for the play of light over hills.
+float relief(vec3 p) {
+    float s = 0.0, a = 0.5;
+    for (int i = 0; i < 4; i++) {
+        s += a * noise(p);
+        p = p * 2.17 + vec3(4.1, 1.3, 7.7);
+        a *= 0.5;
+    }
+    return s / 0.9375;
+}
+
+// How rugged each kind of planet is: rock and ice are craggy, seas and
+// cloud tops smooth.
+float ruggedness() {
+    if (uKind == 1) return 1.0;   // desert
+    if (uKind == 3) return 0.6;   // ice
+    if (uKind == 4) return 0.8;   // lava
+    if (uKind == 8) return 1.2;   // cratered rock
+    if (uKind == 0 || uKind == 7) return 0.7;  // temperate, jungle
+    if (uKind == 5) return 0.3;   // ocean
+    return 0.0;                   // gas giant, toxic clouds, ice giant
 }
 
 // Distance to the nearest of a scatter of points: craters.
@@ -527,10 +551,30 @@ void main() {
         vec3 q = vec3(dot(n, uAxis0), dot(n, uAxis1), dot(n, uAxis2));
         float cs = cos(uSpin), ss = sin(uSpin);
         q = vec3(q.x * cs - q.z * ss, q.y, q.x * ss + q.z * cs);
+
+        // Hills and hollows: tilt the surface by the slope of the fine
+        // relief, so the light picks them out.
+        float rugged = ruggedness();
+        if (rugged > 0.0) {
+            const float e = 0.0015, scale = 30.0;
+            vec3 base = (q + uSeed) * scale;
+            float h0 = relief(base);
+            vec3 g = vec3(relief(base + vec3(e * scale, 0.0, 0.0)), relief(base + vec3(0.0, e * scale, 0.0)),
+                          relief(base + vec3(0.0, 0.0, e * scale))) - h0;
+            g /= e;
+            g -= q * dot(g, q);
+            vec3 gp = vec3(g.x * cs + g.z * ss, g.y, -g.x * ss + g.z * cs);  // undo the spin
+            n = normalize(n - (uAxis0 * gp.x + uAxis1 * gp.y + uAxis2 * gp.z) * rugged * 0.02);
+        }
         float ndl = dot(n, uSunDir);
         float lit = smoothstep(-0.08, 0.25, ndl) * (0.25 + 0.75 * max(ndl, 0.0)) * ringShadow(x);
         vec3 own;
         vec3 surf = surface(q, own);
+        // Fine mottling of the colour; on banded and cloudy worlds, streaks
+        // drawn out along the bands.
+        bool streaky = uKind == 2 || uKind == 6 || uKind == 9;
+        vec3 fq = streaky ? vec3(q.x * 10.0, q.y * 90.0, q.z * 10.0) : q * 35.0;
+        surf *= (0.86 + 0.28 * relief(fq + uSeed)) * (0.9 + 0.2 * relief(fq * 3.7 + uSeed * 1.3));
         pc = surf * uLight * lit * 0.55 + surf * 0.008 + own;
         float rim = pow(1.0 - max(dot(n, -d), 0.0), 3.0);
         pc += uAtm * uLight * rim * (0.35 * smoothstep(-0.2, 0.4, ndl) + back * 1.5);
@@ -614,9 +658,13 @@ static const StarKind kStarKinds[] = {
     {"yellow star",   1.5f,  {1.00f, 0.90f, 0.70f}, {1.00f, 0.95f, 0.85f}, 25.0f},
     {"brown dwarf",   1.0f,  {0.70f, 0.30f, 0.20f}, {0.40f, 0.20f, 0.15f}, 15.0f},
     {"neutron star",  0.12f, {0.70f, 0.85f, 1.00f}, {0.70f, 0.80f, 1.00f}, 25.0f},
+    {"red giant and neutron star", 9.0f, {1.00f, 0.42f, 0.22f}, {1.00f, 0.55f, 0.35f}, 60.0f},
 };
 static const int kStarKindCount = sizeof(kStarKinds) / sizeof(kStarKinds[0]);
 static const int kNeutronStar = 3;
+static const int kRedGiant = 0;
+static const int kDoubleStar = 4;   // a red giant, and a neutron star pulling gas off it
+static const float kDoubleGap = 24.0f;  // from the giant's centre to the neutron star
 
 // The planets the ship can orbit. Colours are sea/base, land/bands, detail
 // and atmosphere; each is varied a little every time. Some kinds have more
@@ -1445,53 +1493,183 @@ static void DrawStars(Scene& sc)
 
 // Where the captured star is on screen (pixels, y up) and how big it looks.
 // It grows out of the point of light it was a moment ago.
-static bool SunOnScreen(const Scene& sc, float& x, float& y, float& radius, float& grown)
+// Where a point in space is on screen: pixels, y down (as the stars are
+// drawn); false if it is behind the camera.
+static bool ToScreen(const Scene& sc, const float* p, float& x, float& y)
 {
     const Flight& fl = g_flight;
-    if (!fl.sun.on || fl.sun.z < 0.5f) return false;
+    if (p[2] < 0.5f) return false;
     const float f = kFocal * sc.H;
     const float cx = sc.W * 0.5f + fl.headingX * sc.H, cy = sc.H * 0.5f - fl.headingY * sc.H;
     const float c0 = cosf(fl.roll), s0 = sinf(fl.roll);
-    x = cx + f * (fl.sun.x * c0 - fl.sun.y * s0) / fl.sun.z;
-    y = sc.H - (cy - f * (fl.sun.x * s0 + fl.sun.y * c0) / fl.sun.z);
-    float u = std::min(fl.sun.age / 3.0f, 1.0f);
-    grown = u * u * (3 - 2 * u);
-    radius = f * fl.sun.radius / fl.sun.z * (0.15f + 0.85f * grown);
+    x = cx + f * (p[0] * c0 - p[1] * s0) / p[2];
+    y = cy - f * (p[0] * s0 + p[1] * c0) / p[2];
     return true;
 }
 
-// The star the ship has been captured by, seen up close.
-static void DrawSun(Scene& sc)
+// How far the captured star has grown out of the point of light it was a
+// moment ago, 0..1.
+static float SunGrown()
+{
+    float u = std::min(g_flight.sun.age / 3.0f, 1.0f);
+    return u * u * (3 - 2 * u);
+}
+
+// The neutron star of a double star.
+static void Companion(float* p)
 {
     const Flight& fl = g_flight;
-    float x, y, radius, grown;
-    if (!SunOnScreen(sc, x, y, radius, grown)) return;
+    p[0] = fl.sun.x + fl.sun.side[0] * kDoubleGap;
+    p[1] = fl.sun.y + fl.sun.side[1] * kDoubleGap;
+    p[2] = fl.sun.z + fl.sun.side[2] * kDoubleGap;
+}
+
+// One star, seen up close, of the given kind (see kStarKinds).
+static void DrawStar(Scene& sc, const float* pos, int kind)
+{
+    const Flight& fl = g_flight;
+    float x, y;
+    if (!fl.sun.on || !ToScreen(sc, pos, x, y)) return;
+    const StarKind& sk = kStarKinds[kind];
+    const float grown = SunGrown();
+    const float radius = kFocal * sc.H * sk.radius / pos[2] * (0.15f + 0.85f * grown);
 
     // A neutron star's beams sweep round its spin axis.
-    float beam[3];
-    for (int i = 0; i < 3; i++) {
-        float across = cosf(fl.sun.beamPhase) * fl.sun.side[i];
-        float other = 0;
-        float cr[3];
-        Flight::Cross(fl.sun.axis, fl.sun.side, cr);
-        other = sinf(fl.sun.beamPhase) * cr[i];
-        beam[i] = 0.45f * fl.sun.axis[i] + 0.9f * (across + other);
-    }
+    float beam[3], cr[3];
+    Flight::Cross(fl.sun.axis, fl.sun.side, cr);
+    for (int i = 0; i < 3; i++)
+        beam[i] = 0.45f * fl.sun.axis[i] + 0.9f * (cosf(fl.sun.beamPhase) * fl.sun.side[i] + sinf(fl.sun.beamPhase) * cr[i]);
     Flight::Normalize(beam);
     const float c0 = cosf(fl.roll), s0 = sinf(fl.roll);
 
     GLuint p = sc.progSun;
     glUseProgram(p);
-    glUniform2f(glGetUniformLocation(p, "uCenter"), x, y);
-    glUniform1f(glGetUniformLocation(p, "uRadius"), std::max(radius, fl.sun.kind == kNeutronStar ? 1.5f * sc.S : 1.0f));
-    glUniform3f(glGetUniformLocation(p, "uColor"), fl.sun.r, fl.sun.g, fl.sun.b);
+    glUniform2f(glGetUniformLocation(p, "uCenter"), x, sc.H - y);
+    glUniform1f(glGetUniformLocation(p, "uRadius"), std::max(radius, kind == kNeutronStar ? 1.5f * sc.S : 1.0f));
+    glUniform3f(glGetUniformLocation(p, "uColor"), sk.color[0], sk.color[1], sk.color[2]);
     glUniform1f(glGetUniformLocation(p, "uGlow"), 0.3f + 0.7f * grown);
-    glUniform1i(glGetUniformLocation(p, "uKind"), fl.sun.kind);
+    glUniform1i(glGetUniformLocation(p, "uKind"), kind);
     glUniform1f(glGetUniformLocation(p, "uTime"), (float)fl.t);
     glUniform3f(glGetUniformLocation(p, "uBeam"), beam[0] * c0 - beam[1] * s0, beam[0] * s0 + beam[1] * c0, beam[2]);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     DrawFullscreen();
     glBlendFunc(GL_ONE, GL_ONE);
+}
+
+// The gas a neutron star pulls off its red giant: a stream arcing across
+// from the giant's near side, swept along by the pair's orbit, spiralling
+// into a hot disc round the neutron star. Bright knots travel down the
+// stream; the disc turns, fastest at its hot inner edge. Drawn as glowing
+// segments, with the stars' streak shader.
+static void DrawDoubleStarGas(Scene& sc)
+{
+    const Flight& fl = g_flight;
+    const float f = kFocal * sc.H, t = (float)fl.t, fade = SunGrown();
+    const float* side = fl.sun.side;
+    const float* axis = fl.sun.axis;
+    float along[3];
+    Flight::Cross(axis, side, along);
+    const float giant = kStarKinds[kRedGiant].radius, disc = 3.0f;
+    float ns[3];
+    Companion(ns);
+
+    std::vector<float>& v = sc.verts;
+    v.clear();
+    // A glowing segment from a to b (points in space), width in space units.
+    auto segment = [&](const float* a, const float* b, float width, float r, float g, float bl) {
+        float ax, ay, bx, by;
+        if (!ToScreen(sc, a, ax, ay) || !ToScreen(sc, b, bx, by)) return;
+        float w = std::max(0.8f * sc.S, f * width / ((a[2] + b[2]) * 0.5f));
+        float dx = bx - ax, dy = by - ay, len = sqrtf(dx * dx + dy * dy);
+        float ux = 1, uy = 0;
+        if (len > 1e-3f) {
+            ux = dx / len;
+            uy = dy / len;
+        }
+        float m = 3.0f * w;
+        float x0 = ax - ux * m, y0 = ay - uy * m, x1 = bx + ux * m, y1 = by + uy * m, nx = -uy * m, ny = ux * m;
+        r *= fade;
+        g *= fade;
+        bl *= fade;
+        v.insert(v.end(), {x0 + nx, y0 + ny, -m, m, len, w, r, g, bl, x1 + nx, y1 + ny, len + m, m, len, w, r, g, bl,
+                           x1 - nx, y1 - ny, len + m, -m, len, w, r, g, bl, x0 + nx, y0 + ny, -m, m, len, w, r, g, bl,
+                           x1 - nx, y1 - ny, len + m, -m, len, w, r, g, bl, x0 - nx, y0 - ny, -m, -m, len, w, r, g, bl});
+    };
+    auto point = [&](float* out, const float* c, float s1, const float* d1, float s2, const float* d2) {
+        for (int i = 0; i < 3; i++) out[i] = c[i] + d1[i] * s1 + d2[i] * s2;
+    };
+
+    // The stream: a curve from the giant's surface to the edge of the disc.
+    const float gc[3] = {fl.sun.x, fl.sun.y, fl.sun.z};
+    float p0[3], p1[3], p2[3], p3[3];
+    point(p0, gc, giant * 0.97f, side, 0.0f, along);
+    point(p1, gc, giant + kDoubleGap * 0.3f, side, kDoubleGap * 0.18f, along);
+    point(p2, ns, -disc * 1.6f, side, disc * 1.5f, along);
+    point(p3, ns, -disc * 0.3f, side, disc * 0.95f, along);
+    auto bezier = [&](float u, float* out) {
+        float a = (1 - u) * (1 - u) * (1 - u), b = 3 * u * (1 - u) * (1 - u), c = 3 * u * u * (1 - u), d = u * u * u;
+        for (int i = 0; i < 3; i++) out[i] = p0[i] * a + p1[i] * b + p2[i] * c + p3[i] * d;
+    };
+    const int steps = 90;
+    float prev[3];
+    bezier(0, prev);
+    for (int k = 1; k <= steps; k++) {
+        float u = (float)k / steps, cur[3];
+        bezier(u, cur);
+        float knot = powf(0.5f + 0.5f * sinf(6.2831853f * (u * 7.0f - t * 0.35f)), 3.0f);
+        float bright = (0.5f + 0.5f * knot) * (0.7f + 0.8f * u) * 0.55f;
+        float r = 1.0f, g = 0.45f + 0.4f * u, b = 0.2f + 0.4f * u;
+        segment(prev, cur, 0.8f + (0.22f - 0.8f) * u, r * bright, g * bright, b * bright);
+        for (int i = 0; i < 3; i++) prev[i] = cur[i];
+    }
+
+    // The disc: rings of glowing gas, turning, hottest and brightest within.
+    const int rings = 14, around = 64;
+    for (int ri = 0; ri < rings; ri++) {
+        float rr = 0.35f + (disc - 0.35f) * ri / (rings - 1);
+        float spin = t * 2.5f / powf(rr, 1.5f);
+        float heat = 1.0f - (rr - 0.35f) / (disc - 0.35f);
+        for (int k = 0; k < around; k++) {
+            float a0 = 6.2831853f * k / around, a1 = 6.2831853f * (k + 1) / around;
+            float a[3], b[3];
+            point(a, ns, rr * cosf(a0), side, rr * sinf(a0), along);
+            point(b, ns, rr * cosf(a1), side, rr * sinf(a1), along);
+            float swirl = 0.6f + 0.4f * sinf(3.0f * a0 - spin + 6.0f * logf(rr));
+            float bright = swirl * 0.5f / rr;
+            float r = 1.0f, g = 0.55f + 0.35f * heat, bl = 0.25f + 0.75f * heat;
+            segment(a, b, (disc - 0.35f) / rings * 0.9f, r * bright, g * bright, bl * bright);
+        }
+    }
+    if (v.empty()) return;
+
+    glUseProgram(sc.progStreak);
+    glUniform2f(glGetUniformLocation(sc.progStreak, "uRes"), (float)sc.W, (float)sc.H);
+    glUniform1f(glGetUniformLocation(sc.progStreak, "uWarp"), 0.0f);
+    for (int i = 0; i < 4; i++) glEnableVertexAttribArray(i);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 36, v.data());
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 36, v.data() + 2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 36, v.data() + 4);
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 36, v.data() + 6);
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(v.size() / 9));
+    for (int i = 1; i < 4; i++) glDisableVertexAttribArray(i);
+}
+
+// The star the ship has been captured by, seen up close. A double star's gas
+// is drawn first, so the giant hides any of it that passes behind.
+static void DrawSun(Scene& sc)
+{
+    const Flight& fl = g_flight;
+    if (!fl.sun.on) return;
+    const float pos[3] = {fl.sun.x, fl.sun.y, fl.sun.z};
+    if (fl.sun.kind == kDoubleStar) {
+        DrawDoubleStarGas(sc);
+        DrawStar(sc, pos, kRedGiant);
+        float ns[3];
+        Companion(ns);
+        DrawStar(sc, ns, kNeutronStar);
+    } else {
+        DrawStar(sc, pos, fl.sun.kind);
+    }
 }
 
 // The planet the ship orbits, in front of the stars and its sun.
@@ -1527,7 +1705,7 @@ static void DrawPlanet(Scene& sc)
     glUniform1i(glGetUniformLocation(p, "uRings"), pl.rings ? 1 : 0);
     glUniform3f(glGetUniformLocation(p, "uRingCol"), pl.ringCol[0], pl.ringCol[1], pl.ringCol[2]);
     glUniform1f(glGetUniformLocation(p, "uFade"), u * u * (3 - 2 * u));
-    glUniform1i(glGetUniformLocation(p, "uOctaves"), fl.wide > 0.2f ? 8 : 5);
+    glUniform1i(glGetUniformLocation(p, "uOctaves"), fl.wide > 0.2f ? 10 : 7);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     DrawFullscreen();
     glBlendFunc(GL_ONE, GL_ONE);
