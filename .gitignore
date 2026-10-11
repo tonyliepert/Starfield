@@ -1,0 +1,8 @@
+*.o
+*.scr
+*.exe
+*.bmp
+*.png
+shots/
+*.wav
+*.mp3
