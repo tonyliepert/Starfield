@@ -4,14 +4,17 @@ A Windows screensaver: a starship flying through deep space at warp.
 
 - Stars stream past with motion blur and Doppler colour, and the ship flies
   on through drifting nebulae. A chase camera follows an original
-  saucer-and-twin-pod starship, its engine rings pulsing, its red beacon and
-  tail lights blinking, and ion trails streaming from its exhausts.
+  saucer-and-twin-pod starship, its engine rings pulsing, its red beacon
+  blinking, rows of red tail lights flashing outwards along its wings, and
+  ion trails streaming from its exhausts and spine.
 - Close passes bend the ship's course by gravity. A very close pass captures
   it: it drops out of warp at a red giant, yellow star, brown dwarf, neutron
   star, or a red giant with a neutron star pulling a stream of gas off it
   into a glowing disc. It then descends into a low orbit around one of ten
-  kinds of procedural planet while the camera rides overhead. After two laps
-  it jumps back to warp.
+  kinds of procedural planet, with up to three moons, while the camera
+  follows above and behind it. Habitable worlds show fields, roads and towns
+  by day and city lights by night. After two laps the ship jumps back to
+  warp.
 - Original music, synthesized at startup, crossfades between a cruise theme
   and a calmer orbit theme. If `geoffharvey-starfleet-command-150605.mp3` (or
   whatever `kTrackFile` in `src/music.h` names) is beside the program, it

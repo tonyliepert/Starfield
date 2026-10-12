@@ -2,12 +2,12 @@
 //
 // An original design: a broad silver-white saucer for the crew, ringed with
 // lit windows, a raised dome on top ringed with windows and a red beacon
-// blinking on it, a tapered delta spine running aft to two red tail lights
-// that blink with the beacon, and broad, smoothly streamlined swept wings,
-// rising like a manta's, carrying two long cylindrical engine pods high at
-// their tips. The pods have pointed nose cones, glowing exhausts trailing
-// luminous ion streams, and rings of light flashing one after another from
-// front to back, all brighter at warp.
+// blinking on it, a tapered delta spine running aft to a faint, steady ion
+// stream, and broad, smoothly streamlined swept wings, rising like a manta's,
+// with a row of red tail lights flashing outwards along their trailing
+// edges, carrying two long cylindrical engine pods high at their tips. The pods have pointed nose
+// cones, glowing exhausts trailing luminous ion streams, and rings of light
+// flashing one after another from front to back, all brighter at warp.
 //
 // The camera looks where it always has, riding along with the ship, which
 // flies a little ahead of it and below its line of sight. It is drawn into
@@ -18,7 +18,9 @@
 
 // Model space: x to starboard, y up, z towards the bow. Materials:
 enum ShipMaterial { kHull = 0, kExhaust = 1, kWindows = 3, kDark = 4, kTrail = 5, kBeacon = 6,
-                    kPodRing = 10 };  // pod ring i (0 at the front) is kPodRing + i
+                    kPodRing = 10,    // pod ring i (0 at the front) is kPodRing + i
+                    kStrutLight = 20 };  // strut tail light i (0 innermost) is kStrutLight + i
+static const int kStrutLights = 6;
 static const int kPodRings = 5;
 
 static const float kShipScale = 0.62f;                    // model units to space units
@@ -86,12 +88,14 @@ void main() {
     int mat = int(vMat + 0.5);
     if (mat == 5) {
         // An ion trail: vNormal carries how far along it (0 at the exhaust)
-        // and across it (-1..1) this is. It adds light; it covers nothing.
+        // and across it (-1..1) this is, and whether it is the steady, faint
+        // one from the spine. It adds light; it covers nothing.
         float along = vNormal.x, across = vNormal.y;
+        float power = vNormal.z > 0.5 ? 0.22 : 0.15 + 0.75 * uEngine;
         float flicker = 0.75 + 0.25 * sin(uTime * 37.0 - along * 40.0) * sin(uTime * 23.0 + along * 17.0);
         float core = exp(-across * across * 6.0), halo = exp(-across * across * 1.5) * 0.35;
         vec3 c = mix(vec3(0.75, 0.9, 1.0), vec3(0.3, 0.45, 1.0), along);
-        gl_FragColor = vec4(c * (core + halo) * pow(1.0 - along, 2.0) * flicker * (0.15 + 0.75 * uEngine), 0.0);
+        gl_FragColor = vec4(c * (core + halo) * pow(1.0 - along, 2.0) * flicker * power, 0.0);
         return;
     }
     vec3 glow = vec3(0.0);
@@ -99,6 +103,14 @@ void main() {
     float shine = 1.0;
     if (mat == 1) {
         glow = vec3(0.55, 0.78, 1.0) * (1.0 + 3.0 * uEngine);
+    } else if (mat >= 20) {
+        // The tail lights along each strut flash one after another from the
+        // hull outwards, a sixteenth of a second each, once every 2 seconds.
+        float light = float(mat - 20);
+        float since = fract(uTime * 0.5) * 32.0 - light;
+        float flash = since >= 0.0 ? exp(-since * 2.5) : 0.0;
+        glow = vec3(0.75, 0.0, 0.0) * (0.3 + 9.0 * flash);
+        base = vec3(0.3, 0.0, 0.0);
     } else if (mat >= 10) {
         // The pod rings flash one after another from front to back, each
         // fading as the next lights, then a pause before the next run.
@@ -325,12 +337,6 @@ static void BuildShip()
     const int beaconMats[] = {kBeacon, kBeacon, kBeacon};
     ShipLathe(beacon, beaconMats, 4, 0.2f, 16);
 
-    // Two small red tail lights side by side on the aft tip of the spine,
-    // flashing with the beacon.
-    const float tail[][2] = {{0.0f, -0.0105f}, {0.0032f, -0.0117f}, {0.0045f, -0.015f}, {0.0032f, -0.0183f}, {0.0f, -0.0195f}};
-    const int tailMats[] = {kBeacon, kBeacon, kBeacon, kBeacon};
-    ShipLathe(tail, tailMats, 5, -0.502f, 16, -0.022f);
-    ShipLathe(tail, tailMats, 5, -0.502f, 16, 0.022f);
 
     // The delta spine, tapering aft from beneath the saucer.
     const float spine[8][3] = {
@@ -351,9 +357,22 @@ static void BuildShip()
         float s = (float)side;
         // Root: along the spine, from just behind the saucer to its tail.
         // Tip: buried in the pod. Each is an airfoil, rounded all round.
-        const float root[4] = {s * 0.065f, -0.008f, 0.05f, -0.5f};   // x, y, front z, back z
+        const float root[4] = {s * 0.03f, -0.012f, 0.05f, -0.5f};    // x, y, front z, back z: inside the spine
         const float tip[4] = {s * (podX - 0.015f), podY - 0.004f, -0.3f, -0.72f};
-        ShipStrut(root, tip, 0.017f, 0.009f);
+        ShipStrut(root, tip, 0.022f, 0.009f);
+        // Small red tail lights along the strut's trailing edge, from the
+        // hull out to the pod.
+        for (int i = 0; i < kStrutLights; i++) {
+            float f = 0.14f + 0.72f * i / (kStrutLights - 1);
+            float x = root[0] + (tip[0] - root[0]) * f;
+            float y = root[1] + (tip[1] - root[1]) * f;
+            float z = root[3] + (tip[3] - root[3]) * f - 0.003f;
+            const float r = 0.0045f;
+            const float light[][2] = {{0.0f, y + r}, {r * 0.7f, y + r * 0.7f}, {r, y}, {r * 0.7f, y - r * 0.7f}, {0.0f, y - r}};
+            const int mat = kStrutLight + i;
+            const int mats[] = {mat, mat, mat, mat};
+            ShipLathe(light, mats, 5, z, 12, x);
+        }
         ShipPod(s * podX, podY, kPodBack, -0.12f, podR);
     }
 }
@@ -488,10 +507,10 @@ static void DrawShip(Scene& sc)
     // positions are worked out here, seen from the camera, so the ship's
     // own placement is switched off while they are drawn.
     const float engine = std::min(1.0f, 0.15f + 0.85f * fl.warp + fl.flash * 3.0f);
-    const float length = (0.5f + 2.5f * engine) * scale;
     std::vector<ShipVertex> trail;
-    for (int side = -1; side <= 1; side += 2) {
-        const float m[3] = {side * kPodX, kPodY, kPodBack - 0.015f};
+    // A trail streaming back from m (model units): length and widths in space
+    // units; steady trails keep the same faint glow whatever the engines do.
+    auto addTrail = [&](const float* m, float length, float widthStart, float widthEnd, bool steady) {
         float a[3], b[3];
         for (int i = 0; i < 3; i++) {
             a[i] = at[i] + (r2[i] * m[0] + u2[i] * m[1] + fwd[i] * m[2]) * scale;
@@ -505,14 +524,24 @@ static void DrawShip(Scene& sc)
             for (int i = 0; i < 3; i++) out[i] *= halfWidth;
         };
         float wa[3], wb[3];
-        across(a, kPodR * scale * 0.7f, wa);
-        across(b, kPodR * scale * 1.4f, wb);
-        ShipVertex v0 = {{a[0] - wa[0], a[1] - wa[1], a[2] - wa[2]}, {0, -1, 0}, kTrail};
-        ShipVertex v1 = {{a[0] + wa[0], a[1] + wa[1], a[2] + wa[2]}, {0, 1, 0}, kTrail};
-        ShipVertex v2 = {{b[0] + wb[0], b[1] + wb[1], b[2] + wb[2]}, {1, 1, 0}, kTrail};
-        ShipVertex v3 = {{b[0] - wb[0], b[1] - wb[1], b[2] - wb[2]}, {1, -1, 0}, kTrail};
+        across(a, widthStart, wa);
+        across(b, widthEnd, wb);
+        const float s = steady ? 1.0f : 0.0f;
+        ShipVertex v0 = {{a[0] - wa[0], a[1] - wa[1], a[2] - wa[2]}, {0, -1, s}, kTrail};
+        ShipVertex v1 = {{a[0] + wa[0], a[1] + wa[1], a[2] + wa[2]}, {0, 1, s}, kTrail};
+        ShipVertex v2 = {{b[0] + wb[0], b[1] + wb[1], b[2] + wb[2]}, {1, 1, s}, kTrail};
+        ShipVertex v3 = {{b[0] - wb[0], b[1] - wb[1], b[2] - wb[2]}, {1, -1, s}, kTrail};
         trail.insert(trail.end(), {v0, v1, v2, v0, v2, v3});
+    };
+    // From the engine exhausts: longer and brighter the harder they work.
+    const float length = (0.5f + 2.5f * engine) * scale;
+    for (int side = -1; side <= 1; side += 2) {
+        const float m[3] = {side * kPodX, kPodY, kPodBack - 0.015f};
+        addTrail(m, length, kPodR * scale * 0.7f, kPodR * scale * 1.4f, false);
     }
+    // From the tip of the spine: faint and steady, warp or no warp.
+    const float spineTip[3] = {0.0f, -0.015f, -0.505f};
+    addTrail(spineTip, 1.2f * scale, kPodR * scale * 0.45f, kPodR * scale * 0.9f, true);
     glUniform3f(glGetUniformLocation(p, "uRight"), 1, 0, 0);
     glUniform3f(glGetUniformLocation(p, "uUp"), 0, 1, 0);
     glUniform3f(glGetUniformLocation(p, "uFwd"), 0, 0, 1);

@@ -8,7 +8,8 @@
 // warp, circles twice round a planet of that star and flies on. The star may
 // be a red giant, a yellow star, a brown dwarf, a neutron star, or a red
 // giant with a neutron star pulling a stream of gas off it, and the
-// planet any of ten kinds, each a little different every time.
+// planet any of ten kinds, each a little different every time, with up to
+// three moons, and lights, fields and roads on its land if it is habitable.
 //
 // Command line (standard screensaver protocol):
 //   /s          run full screen
@@ -364,6 +365,7 @@ uniform int uRings;
 uniform vec3 uRingCol;
 uniform float uFade;
 uniform int uOctaves;     // finer detail when seen up close
+uniform int uCivilized;   // a habitable world with people on it
 
 float hash(vec3 p) {
     p = fract(p * 0.3183099 + 0.1);
@@ -428,18 +430,61 @@ float cells(vec3 p) {
     return best;
 }
 
+// Light from towns and roads, shown only on the night side (set by surface()).
+vec3 gNight = vec3(0.0);
+
+// Signs of people on a habitable world's land: patchworks of planted fields,
+// grey sprawl of towns and cities, roads winding between them; and at night,
+// glittering city lights and threads of lit roads. Only in scattered settled
+// regions, away from the poles.
+void civilization(vec3 q, vec3 p, float land, inout vec3 c) {
+    float settled = smoothstep(0.42, 0.58, fbm(p * 1.4 + 31.0)) * land * (1.0 - smoothstep(0.55, 0.72, abs(q.y)));
+    if (settled <= 0.0) return;
+    // Towns and cities: scattered clusters, densest at their hearts and
+    // thinning out into suburbs, with open country between.
+    float town = pow(smoothstep(0.6, 0.92, noise(p * 12.0 + 71.0)), 2.0);
+    float city = max(town, 0.6 * pow(smoothstep(0.7, 0.95, noise(p * 31.0 + 13.0)), 2.0)) * settled;
+    // Fields: a patchwork of plots, each sown with its own crop.
+    vec3 cell = floor(q * 300.0);
+    float crop = hash(cell + uSeed);
+    vec3 field = crop < 0.33 ? vec3(0.3, 0.45, 0.14) : crop < 0.66 ? vec3(0.62, 0.55, 0.24) : vec3(0.42, 0.32, 0.2);
+    field *= 0.85 + 0.3 * hash(cell * 2.3 + 1.0);
+    if (uKind == 7) field = mix(field.gbr, uColB, 0.35);  // stranger crops on an alien world
+    vec3 fe = fract(q * 300.0);
+    float border = min(min(min(fe.x, 1.0 - fe.x), min(fe.y, 1.0 - fe.y)), min(fe.z, 1.0 - fe.z));
+    field *= mix(0.72, 1.0, smoothstep(0.0, 0.06, border));  // hedgerows between plots
+    float farm = settled * (1.0 - smoothstep(0.05, 0.3, city)) * step(0.2, hash(cell * 1.7 + 5.0));
+    c = mix(c, field, farm * 0.8);
+    c = mix(c, vec3(0.5, 0.5, 0.52), smoothstep(0.05, 0.6, city) * 0.8);
+    // Roads: a well-warped net, wandering between the settlements.
+    vec3 warp = vec3(noise(p * 2.5), noise(p * 2.5 + 7.0), noise(p * 2.5 + 13.0)) - 0.5;
+    warp += (vec3(noise(p * 9.0), noise(p * 9.0 + 3.0), noise(p * 9.0 + 5.0)) - 0.5) * 0.3;
+    vec3 rf = abs(fract(q * 28.0 + warp * 3.0) - 0.5);
+    float road = (1.0 - smoothstep(0.0, 0.025, 0.5 - max(rf.x, max(rf.y, rf.z)))) * smoothstep(0.15, 0.6, settled);
+    c = mix(c, vec3(0.33, 0.32, 0.31), road * 0.75);
+    // At night: many small lights, thickest at the cities' hearts and
+    // scattered thinly through their suburbs; roads glow faintly.
+    vec3 spot = floor(q * 1100.0);
+    float lit = step(1.0 - city * 0.95, hash(spot + uSeed.yzx)) * (0.5 + 0.5 * hash(spot * 1.3 + 2.0));
+    gNight = vec3(1.0, 0.72, 0.38) * (lit * (0.8 + city * 1.6) + road * settled * 0.12);
+}
+
 // Surface colour at a point q on the unit sphere (the planet's own frame).
 // Light the planet gives off itself goes in glow.
 vec3 surface(vec3 q, out vec3 glow) {
     vec3 p = q + uSeed;
     glow = vec3(0.0);
+    gNight = vec3(0.0);
     if (uKind == 0) {  // temperate: seas, continents, ice caps and clouds
         float h = fbm(p * 2.2);
         vec3 land = mix(uColB, uColC, smoothstep(0.58, 0.72, h));
         vec3 sea = mix(uColA * 0.6, uColA * 1.5, smoothstep(0.3, 0.5, h));
         vec3 c = h > 0.52 ? land : sea;
-        c = mix(c, vec3(0.9), smoothstep(0.75, 0.85, abs(q.y) + (h - 0.5) * 0.3));
+        float ice = smoothstep(0.75, 0.85, abs(q.y) + (h - 0.5) * 0.3);
+        if (uCivilized != 0) civilization(q, p, step(0.52, h) * (1.0 - ice), c);
+        c = mix(c, vec3(0.9), ice);
         float cloud = smoothstep(0.5, 0.75, fbm(p * 3.5 + vec3(uSpin * 0.3, 0.0, 0.0)));
+        gNight *= 1.0 - cloud * 0.7;
         return mix(c, vec3(0.95), cloud * 0.85);
     }
     if (uKind == 1) {  // desert, with dune fields and frosted poles
@@ -473,8 +518,10 @@ vec3 surface(vec3 q, out vec3 glow) {
         float h = fbm(p * 3.0);
         vec3 c = mix(uColA, uColB, smoothstep(0.4, 0.7, h));
         c = mix(c, uColC, smoothstep(0.72, 0.75, h));
+        if (uCivilized != 0) civilization(q, p, smoothstep(0.73, 0.75, h), c);
         vec3 w = p * 2.5 + vec3(fbm(p * 2.0), fbm(p * 2.0 + 3.3), 0.0) * 2.5;
         float cloud = smoothstep(0.52, 0.75, fbm(w + vec3(uSpin * 0.4, 0.0, 0.0)));
+        gNight *= 1.0 - cloud * 0.7;
         return mix(c, vec3(0.95), cloud * 0.9);
     }
     if (uKind == 6) {  // shrouded in thick, poisonous cloud
@@ -488,7 +535,9 @@ vec3 surface(vec3 q, out vec3 glow) {
         land = mix(land, uColC, smoothstep(0.66, 0.76, h));
         vec3 sea = mix(uColA * 0.7, uColA * 1.4, smoothstep(0.3, 0.5, h));
         vec3 c = h > 0.5 ? land : sea;
+        if (uCivilized != 0) civilization(q, p, step(0.5, h), c);
         float cloud = smoothstep(0.58, 0.8, fbm(p * 4.0 + vec3(uSpin * 0.3, 0.0, 0.0)));
+        gNight *= 1.0 - cloud * 0.5;
         return mix(c, vec3(0.9, 0.9, 0.95), cloud * 0.6);
     }
     if (uKind == 8) {  // airless, cratered rock
@@ -575,7 +624,7 @@ void main() {
         bool streaky = uKind == 2 || uKind == 6 || uKind == 9;
         vec3 fq = streaky ? vec3(q.x * 10.0, q.y * 90.0, q.z * 10.0) : q * 35.0;
         surf *= (0.86 + 0.28 * relief(fq + uSeed)) * (0.9 + 0.2 * relief(fq * 3.7 + uSeed * 1.3));
-        pc = surf * uLight * lit * 0.55 + surf * 0.008 + own;
+        pc = surf * uLight * lit * 0.55 + surf * 0.008 + own + gNight * (1.0 - smoothstep(-0.05, 0.12, ndl));
         float rim = pow(1.0 - max(dot(n, -d), 0.0), 3.0);
         pc += uAtm * uLight * rim * (0.35 * smoothstep(-0.2, 0.4, ndl) + back * 1.5);
     }
@@ -635,12 +684,13 @@ static const float kGravity     = 3500.0f;  // pull of a star on the ship, per u
 static const float kReach       = 20.0f;    // how close a star must pass to pull the ship round
 static const float kSwing       = 0.8f;     // seconds over which a star's pull swings the ship round
 static const float kMaxTurn     = 0.3f;     // fastest the ship turns, radians per second
-static const float kCapture     = 2.5f;     // a star passing closer than this captures the ship
-static const float kCaptureRest = 120.0f;   // seconds after an orbit before the ship can be captured again
+static const float kCapture     = 5.0f;     // a star passing closer than this captures the ship
+static const float kCaptureRest = 60.0f;    // seconds after an orbit before the ship can be captured again
 static const float kShipAt[3]  = {0.0f, -0.48f, 1.6f};  // where the ship flies, from the camera behind it
 static const float kWideTime    = 6.0f;    // seconds for the camera to rise above the ship in orbit, or come back down
 static const float kLowOrbit    = 1.05f;   // the ship's orbit, in planet radii from its centre
 static const float kOverhead    = 0.13f;   // how high above the ship the camera rides, in planet radii
+static const float kBehind     = 1.2f;    // how far the camera trails the ship in orbit, for each unit it is above it
 static const float kArriveAt    = 2.2f;    // how far above the planet's surface the ship stops before descending
 static const float kOrbitTime   = 30.0f;    // seconds for one lap of the planet
 static const int   kOrbits      = 2;        // laps before the ship flies on
@@ -896,6 +946,16 @@ struct Flight {
         bool rings;
         float ringCol[3];
         float age;
+        // Its moons.
+        int moons;
+        struct {
+            float distance;   // from the planet's centre
+            float angle, speed, tilt;
+            float radius;
+            int kind;         // as for planets: cratered rock, ice or desert
+            float colA[3], colB[3], colC[3];
+            float seed[3];
+        } moon[3];
     } planet;
     float orbitAxis[3] = {0, 1, 0};     // the ship circles the planet about this
     // In orbit the camera rises to ride along high above the ship.
@@ -1007,6 +1067,29 @@ struct Flight {
         planet.orbitRadius = planet.radius * kLowOrbit;  // close to the surface, under any rings
         planet.age = 0;
 
+        // Moons: up to three, the nearer ones quicker, all clear of any rings.
+        float m = Rand();
+        planet.moons = m < 0.25f ? 0 : m < 0.6f ? 1 : m < 0.85f ? 2 : 3;
+        float reach = planet.radius * (planet.rings ? 2.8f : 2.0f);
+        static const int kMoonKinds[3] = {8, 3, 1};  // cratered rock, ice, desert
+        for (int i = 0; i < planet.moons; i++) {
+            auto& mn = planet.moon[i];
+            reach += planet.radius * (0.8f + 0.9f * Rand());
+            mn.distance = reach;
+            mn.angle = Rand() * 6.2831853f;
+            mn.speed = 0.15f * powf(2.0f * planet.radius / mn.distance, 1.5f);
+            mn.tilt = (Rand() - 0.5f) * 0.4f;
+            mn.radius = planet.radius * (0.12f + 0.16f * Rand());
+            mn.kind = kMoonKinds[std::min(2, (int)(Rand() * 3))];
+            const PlanetKind& mk = kPlanetKinds[mn.kind];
+            int pal = std::min(mk.palettes - 1, (int)(Rand() * mk.palettes));
+            Vary(mk.colors[pal][0], mn.colA, 0.3f);
+            Vary(mk.colors[pal][1], mn.colB, 0.3f);
+            Vary(mk.colors[pal][2], mn.colC, 0.3f);
+            for (float& v : mn.seed) v = Rand() * 100.0f;
+            reach = mn.distance;
+        }
+
         phase = Approach;
         phaseTime = 0;
         return true;
@@ -1107,20 +1190,23 @@ struct Flight {
             velY = along[1] * omega * dist + toPlanet[1] * in;
             velZ = along[2] * omega * dist + toPlanet[2] * in;
 
+            // The ship, on its orbit a little ahead of the camera, so the
+            // camera, as high as ever, looks down on it from behind.
+            const float ahead = kBehind * height / planet.orbitRadius;  // radians round the planet
+            const float ca = cosf(ahead), sa = sinf(ahead);
+            for (int i = 0; i < 3; i++) {
+                shipRadial[i] = -toPlanet[i] * ca + along[i] * sa;
+                shipTangent[i] = along[i] * ca + toPlanet[i] * sa;
+                shipPos[i] = planet.x * (i == 0) + planet.y * (i == 1) + planet.z * (i == 2) + shipRadial[i] * planet.orbitRadius;
+            }
+
             bool overhead = phaseTime < phaseLength - kWideTime;
             wide += ((overhead ? 1.0f : 0.0f) - wide) * std::min(1.0f, dt * 0.7f);
             float look[3];
-            for (int i = 0; i < 3; i++) look[i] = overhead ? toPlanet[i] : along[i];
+            for (int i = 0; i < 3; i++) look[i] = overhead ? shipPos[i] : along[i];
             float yaw, pitch;
             Aim(look[0], look[1], look[2], yaw, pitch);
             Steer(yaw, pitch, 2.0f, 0.8f);
-
-            // The ship, on its orbit directly below the camera.
-            for (int i = 0; i < 3; i++) {
-                shipRadial[i] = -toPlanet[i];
-                shipTangent[i] = along[i];
-                shipPos[i] = toPlanet[i] * std::max(dist - planet.orbitRadius, 0.05f);
-            }
             speed = omega * dist;
             if (phaseTime > phaseLength) {
                 // Fly on from where the orbit was going.
@@ -1219,6 +1305,7 @@ struct Flight {
             for (auto& a : planet.axis) rot.Apply(a[0], a[1], a[2]);
             rot.Apply(orbitAxis[0], orbitAxis[1], orbitAxis[2]);
             planet.spin += dt * 0.03f;
+            for (int i = 0; i < planet.moons; i++) planet.moon[i].angle += planet.moon[i].speed * dt;
             planet.age += dt;
             if (!steered && planet.z < -60.0f) planet.on = false;
         }
@@ -1672,14 +1759,22 @@ static void DrawSun(Scene& sc)
     }
 }
 
-// The planet the ship orbits, in front of the stars and its sun.
-static void DrawPlanet(Scene& sc)
+// A world in front of the stars and its sun: the planet, or one of its moons.
+struct Body {
+    float pos[3];
+    float radius;
+    int kind;
+    const float *colA, *colB, *colC, *atm, *seed;
+    bool rings, civilized;
+    float spin;
+};
+
+static void DrawBody(Scene& sc, const Body& w)
 {
     const Flight& fl = g_flight;
-    if (!fl.planet.on) return;
     const auto& pl = fl.planet;
     const float cx = sc.W * 0.5f + fl.headingX * sc.H, cy = sc.H * 0.5f + fl.headingY * sc.H;  // y up
-    float sun[3] = {fl.sun.x - pl.x, fl.sun.y - pl.y, fl.sun.z - pl.z};
+    float sun[3] = {fl.sun.x - w.pos[0], fl.sun.y - w.pos[1], fl.sun.z - w.pos[2]};
     Flight::Normalize(sun);
     float u = std::min(pl.age / 2.0f, 1.0f);
 
@@ -1688,27 +1783,76 @@ static void DrawPlanet(Scene& sc)
     glUniform2f(glGetUniformLocation(p, "uCenter"), cx, cy);
     glUniform1f(glGetUniformLocation(p, "uFocal"), kFocal * sc.H);
     glUniform1f(glGetUniformLocation(p, "uRoll"), fl.roll);
-    glUniform3f(glGetUniformLocation(p, "uPos"), pl.x, pl.y, pl.z);
-    glUniform1f(glGetUniformLocation(p, "uRadius"), pl.radius);
+    glUniform3f(glGetUniformLocation(p, "uPos"), w.pos[0], w.pos[1], w.pos[2]);
+    glUniform1f(glGetUniformLocation(p, "uRadius"), w.radius);
     glUniform3f(glGetUniformLocation(p, "uAxis0"), pl.axis[0][0], pl.axis[0][1], pl.axis[0][2]);
     glUniform3f(glGetUniformLocation(p, "uAxis1"), pl.axis[1][0], pl.axis[1][1], pl.axis[1][2]);
     glUniform3f(glGetUniformLocation(p, "uAxis2"), pl.axis[2][0], pl.axis[2][1], pl.axis[2][2]);
-    glUniform1f(glGetUniformLocation(p, "uSpin"), pl.spin);
+    glUniform1f(glGetUniformLocation(p, "uSpin"), w.spin);
     glUniform3f(glGetUniformLocation(p, "uSunDir"), sun[0], sun[1], sun[2]);
     glUniform3f(glGetUniformLocation(p, "uLight"), fl.sun.light[0], fl.sun.light[1], fl.sun.light[2]);
-    glUniform1i(glGetUniformLocation(p, "uKind"), pl.kind);
-    glUniform3f(glGetUniformLocation(p, "uColA"), pl.colA[0], pl.colA[1], pl.colA[2]);
-    glUniform3f(glGetUniformLocation(p, "uColB"), pl.colB[0], pl.colB[1], pl.colB[2]);
-    glUniform3f(glGetUniformLocation(p, "uColC"), pl.colC[0], pl.colC[1], pl.colC[2]);
-    glUniform3f(glGetUniformLocation(p, "uAtm"), pl.atm[0], pl.atm[1], pl.atm[2]);
-    glUniform3f(glGetUniformLocation(p, "uSeed"), pl.seed[0], pl.seed[1], pl.seed[2]);
-    glUniform1i(glGetUniformLocation(p, "uRings"), pl.rings ? 1 : 0);
+    glUniform1i(glGetUniformLocation(p, "uKind"), w.kind);
+    glUniform3f(glGetUniformLocation(p, "uColA"), w.colA[0], w.colA[1], w.colA[2]);
+    glUniform3f(glGetUniformLocation(p, "uColB"), w.colB[0], w.colB[1], w.colB[2]);
+    glUniform3f(glGetUniformLocation(p, "uColC"), w.colC[0], w.colC[1], w.colC[2]);
+    glUniform3f(glGetUniformLocation(p, "uAtm"), w.atm[0], w.atm[1], w.atm[2]);
+    glUniform3f(glGetUniformLocation(p, "uSeed"), w.seed[0], w.seed[1], w.seed[2]);
+    glUniform1i(glGetUniformLocation(p, "uRings"), w.rings ? 1 : 0);
     glUniform3f(glGetUniformLocation(p, "uRingCol"), pl.ringCol[0], pl.ringCol[1], pl.ringCol[2]);
     glUniform1f(glGetUniformLocation(p, "uFade"), u * u * (3 - 2 * u));
     glUniform1i(glGetUniformLocation(p, "uOctaves"), fl.wide > 0.2f ? 10 : 7);
+    glUniform1i(glGetUniformLocation(p, "uCivilized"), w.civilized ? 1 : 0);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     DrawFullscreen();
     glBlendFunc(GL_ONE, GL_ONE);
+}
+
+// The planet the ship orbits and its moons, the farthest first so nearer
+// ones hide them.
+static void DrawPlanet(Scene& sc)
+{
+    const Flight& fl = g_flight;
+    if (!fl.planet.on) return;
+    const auto& pl = fl.planet;
+    static const float kNoAir[3] = {0, 0, 0};
+
+    Body bodies[4];
+    int n = 0;
+    Body& planet = bodies[n++];
+    planet.pos[0] = pl.x;
+    planet.pos[1] = pl.y;
+    planet.pos[2] = pl.z;
+    planet.radius = pl.radius;
+    planet.kind = pl.kind;
+    planet.colA = pl.colA;
+    planet.colB = pl.colB;
+    planet.colC = pl.colC;
+    planet.atm = pl.atm;
+    planet.seed = pl.seed;
+    planet.rings = pl.rings;
+    planet.civilized = pl.kind == 0 || pl.kind == 5 || pl.kind == 7;  // temperate, ocean, jungle
+    planet.spin = pl.spin;
+    for (int i = 0; i < pl.moons; i++) {
+        const auto& mn = pl.moon[i];
+        Body& b = bodies[n++];
+        // Round the planet's equator, tipped a little.
+        float c = cosf(mn.angle), s = sinf(mn.angle), ct = cosf(mn.tilt), st = sinf(mn.tilt);
+        for (int k = 0; k < 3; k++)
+            b.pos[k] = planet.pos[k] + mn.distance * (pl.axis[0][k] * c + (pl.axis[2][k] * ct + pl.axis[1][k] * st) * s);
+        b.radius = mn.radius;
+        b.kind = mn.kind;
+        b.colA = mn.colA;
+        b.colB = mn.colB;
+        b.colC = mn.colC;
+        b.atm = kNoAir;
+        b.seed = mn.seed;
+        b.rings = false;
+        b.civilized = false;
+        b.spin = mn.angle;  // keeping one face to its planet
+    }
+    auto dist2 = [](const Body& b) { return b.pos[0] * b.pos[0] + b.pos[1] * b.pos[1] + b.pos[2] * b.pos[2]; };
+    std::sort(bodies, bodies + n, [&](const Body& a, const Body& b) { return dist2(a) > dist2(b); });
+    for (int i = 0; i < n; i++) DrawBody(sc, bodies[i]);
 }
 
 #include "ship.h"
