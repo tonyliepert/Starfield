@@ -625,7 +625,7 @@ void main() {
         vec3 fq = streaky ? vec3(q.x * 10.0, q.y * 90.0, q.z * 10.0) : q * 35.0;
         surf *= (0.86 + 0.28 * relief(fq + uSeed)) * (0.9 + 0.2 * relief(fq * 3.7 + uSeed * 1.3));
         pc = surf * uLight * lit * 0.55 + surf * 0.008 + own + gNight * (1.0 - smoothstep(-0.05, 0.12, ndl));
-        float rim = pow(1.0 - max(dot(n, -d), 0.0), 3.0);
+        float rim = pow(clamp(1.0 - dot(n, -d), 0.0, 1.0), 3.0);
         pc += uAtm * uLight * rim * (0.35 * smoothstep(-0.2, 0.4, ndl) + back * 1.5);
     }
 
@@ -692,6 +692,16 @@ static const float kWideTime    = 6.0f;    // seconds for the camera to rise abo
 static const float kLowOrbit    = 1.05f;   // the ship's orbit, in planet radii from its centre
 static const float kOverhead    = 0.13f;   // how high above the ship the camera rides, in planet radii
 static const float kBehind     = 1.2f;    // how far the camera trails the ship in orbit, for each unit it is above it
+static const float kShipBow = 0.56f * 0.62f;  // the ship's bow, ahead of its centre (model bow times its scale)
+static const float kHubPort = 2.05f;      // the station's docking collar, ahead of its centre along its axis
+static const float kRejoinTime = 6.0f;    // seconds for the camera to come in behind the ship after undocking
+static const float kDockedTime  = 30.0f;   // seconds docked at the station before setting out
+static const float kBackingTime = 10.0f;   // seconds backing away from it
+static const float kEarthRadius = 150.0f;  // the Earth the station circles
+static const float kStationOrbit = 172.0f; // the station's distance from the Earth's centre
+static const float kDockedFrom = 150.0f;   // the camera's distance from the station when it starts
+static const float kDockedTo   = 11.0f;    // and when it has closed in, the wheel filling the screen
+static const float kDockedView[3] = {0.35f, 0.25f, 1.0f};  // the way the camera looks back from, in the station's axes
 static const float kArriveAt    = 2.2f;    // how far above the planet's surface the ship stops before descending
 static const float kOrbitTime   = 30.0f;    // seconds for one lap of the planet
 static const int   kOrbits      = 2;        // laps before the ship flies on
@@ -903,9 +913,9 @@ static void Aim(float x, float y, float z, float& yaw, float& pitch)
 }
 
 struct Flight {
-    enum Phase { Cruise, Coast, Jump, Approach, Orbit, Depart };
-    Phase phase = Coast;
-    float phaseTime = 0, phaseLength = 2.5f;  // start with a jump a moment in
+    enum Phase { Cruise, Coast, Jump, Approach, Orbit, Depart, Docked, Undock, Rejoin };
+    Phase phase = Docked;
+    float phaseTime = 0, phaseLength = kDockedTime;  // starts docked; see StartDocked
     double t = 0;
     float speed = kCoastSpeed;
     float velX = 0, velY = 0, velZ = kCoastSpeed;  // the ship's velocity
@@ -971,6 +981,15 @@ struct Flight {
     float shipBank = 0;                  // how far it leans into a turn, radians
     float shipUp[3] = {0, 1, 0};         // which way its deck faces
     float shipOrbiting = 0;              // 0 flying free .. 1 settled in orbit, belly to the planet
+    float shipDocked = 1;                // 1 docked at the station .. 0 under way
+    bool leavingStation = false;         // swinging round to head out from the station
+    // The space station the ship sets out from.
+    struct {
+        bool on = false;
+        float x, y, z;
+        float axis[3][3];                // its own axes: across, up, and along its hub towards the docking side
+        float spin;                      // how far the wheel has turned
+    } station;
     float shipLight[3] = {0.38f, 0.4f, 0.45f};  // colour and strength of the light on the ship
     float shipKey[3] = {0.35f, 0.85f, -0.4f};   // the way that light comes from
     // Guide buoys sent up by a wary planet: they fly in to flank the ship as
@@ -1114,6 +1133,134 @@ struct Flight {
         return true;
     }
 
+    // The opening scene: docked at a great space station circling an
+    // Earth-like world. Laid out round the station first, its axis pointing
+    // straight out from the Earth's centre, then seen from the camera, far
+    // back from it and looking at the Earth.
+    void StartDocked()
+    {
+        phase = Docked;
+        phaseTime = 0;
+        phaseLength = kDockedTime;
+        speed = 0;
+        velX = velY = velZ = 0;
+        sinceOrbit = 0;
+
+        // The sun, far off behind the camera and above, lighting the Earth's
+        // near side.
+        const StarKind& sk = kStarKinds[1];  // a yellow star
+        float sunDir[3] = {0.6f, 0.5f, 0.62f};
+        Normalize(sunDir);
+        sun.on = true;
+        sun.x = sunDir[0] * 2500.0f;
+        sun.y = sunDir[1] * 2500.0f;
+        sun.z = sunDir[2] * 2500.0f;
+        sun.kind = 1;
+        sun.radius = sk.radius;
+        sun.r = sk.color[0];
+        sun.g = sk.color[1];
+        sun.b = sk.color[2];
+        for (int i = 0; i < 3; i++) sun.light[i] = sk.light[i];
+        sun.age = 10;
+        RandomFrame(sun.axis, sun.side);
+        sun.beamPhase = 0;
+
+        // Earth, straight below the station, its equator turned to the camera.
+        planet.on = true;
+        planet.radius = kEarthRadius;
+        planet.x = 0;
+        planet.y = 0;
+        planet.z = -kStationOrbit;
+        float* a0 = planet.axis[0];
+        float* a1 = planet.axis[1];
+        float* a2 = planet.axis[2];
+        a1[0] = 0.3f;
+        a1[1] = 0.9f;
+        a1[2] = 0.3f;
+        Normalize(a1);
+        float fwd[3] = {0, 0, 1};
+        Cross(a1, fwd, a0);
+        Normalize(a0);
+        Cross(a0, a1, a2);
+        planet.spin = Rand() * 6.2831853f;
+        planet.kind = 0;
+        const float sea[3] = {0.02f, 0.08f, 0.25f}, land[3] = {0.18f, 0.32f, 0.12f}, high[3] = {0.5f, 0.42f, 0.28f};
+        const float air[3] = {0.35f, 0.6f, 1.0f};
+        for (int i = 0; i < 3; i++) {
+            planet.colA[i] = sea[i];
+            planet.colB[i] = land[i];
+            planet.colC[i] = high[i];
+            planet.atm[i] = air[i];
+        }
+        for (float& v : planet.seed) v = Rand() * 100.0f;
+        planet.rings = false;
+        planet.wary = false;
+        planet.orbitRadius = planet.radius * kLowOrbit;
+        planet.age = 10;
+        // Its moon.
+        planet.moons = 1;
+        auto& mn = planet.moon[0];
+        mn.distance = planet.radius * 6.0f;
+        mn.angle = 2.2f;
+        mn.speed = 0.004f;
+        mn.tilt = 0.1f;
+        mn.radius = planet.radius * 0.27f;
+        mn.kind = 8;
+        const float grey[3][3] = {{0.4f, 0.39f, 0.37f}, {0.62f, 0.6f, 0.57f}, {0.25f, 0.24f, 0.23f}};
+        for (int i = 0; i < 3; i++) {
+            mn.colA[i] = grey[0][i];
+            mn.colB[i] = grey[1][i];
+            mn.colC[i] = grey[2][i];
+        }
+        for (float& v : mn.seed) v = Rand() * 100.0f;
+
+        // The station, its docking face turned away from the Earth, and the
+        // ship docked at its hub, nose in.
+        station.on = true;
+        station.x = station.y = station.z = 0;
+        station.spin = 0;
+        for (int i = 0; i < 3; i++)
+            for (int k = 0; k < 3; k++) station.axis[i][k] = i == k ? 1.0f : 0.0f;
+        shipFwd[0] = shipFwd[1] = 0;
+        shipFwd[2] = -1;
+        shipUp[0] = shipUp[2] = 0;
+        shipUp[1] = 1;
+        shipPos[0] = shipPos[1] = 0;
+        shipPos[2] = kHubPort + kShipBow;
+        shipDocked = 1;
+        wide = 1;
+
+        // Now as the camera sees it: far back from the station, looking at the
+        // Earth's centre (see Update, Docked).
+        float view[3] = {kDockedView[0], kDockedView[1], kDockedView[2]};
+        Normalize(view);
+        float cam[3] = {view[0] * kDockedFrom, view[1] * kDockedFrom, view[2] * kDockedFrom};
+        float yaw, pitch;
+        Aim(planet.x - cam[0], planet.y - cam[1], planet.z - cam[2], yaw, pitch);
+        const Rotation look(yaw, pitch);
+        auto place = [&](float& x, float& y, float& z) {
+            x -= cam[0];
+            y -= cam[1];
+            z -= cam[2];
+            look.Apply(x, y, z);
+        };
+        auto turn = [&](float* v) { look.Apply(v[0], v[1], v[2]); };
+        place(station.x, station.y, station.z);
+        place(planet.x, planet.y, planet.z);
+        place(sun.x, sun.y, sun.z);
+        place(shipPos[0], shipPos[1], shipPos[2]);
+        for (auto& v : station.axis) turn(v);
+        for (auto& v : planet.axis) turn(v);
+        turn(sun.axis);
+        turn(sun.side);
+        turn(shipFwd);
+        turn(shipUp);
+    }
+
+    // While the camera closes in on the station the stars, which are much
+    // farther off than the field of stars has room for, hold still.
+    bool StarsStill() const { return phase == Docked; }
+
     // Turns towards a direction (yaw and pitch off the line of sight).
     void Steer(float yaw, float pitch, float gain, float maxRate)
     {
@@ -1138,6 +1285,87 @@ struct Flight {
         case Cruise:
             speed = CruiseSpeed();
             break;
+        case Docked: {
+            // Held fast at the station. The camera closes in from far out
+            // along a line fixed to the station, turning from the Earth's
+            // centre to the hub as it comes, until the wheel fills the screen.
+            speed = 0;
+            float u = std::clamp((phaseTime - 2.0f) / (phaseLength - 4.0f), 0.0f, 1.0f);
+            float e = u * u * (3 - 2 * u);
+            float d = kDockedFrom * powf(kDockedTo / kDockedFrom, e);
+            float view[3] = {kDockedView[0], kDockedView[1], kDockedView[2]};
+            Normalize(view);
+            float cam[3], look[3];
+            const float st[3] = {station.x, station.y, station.z}, earth[3] = {planet.x, planet.y, planet.z};
+            for (int i = 0; i < 3; i++) {
+                cam[i] = st[i] + (station.axis[0][i] * view[0] + station.axis[1][i] * view[1] + station.axis[2][i] * view[2]) * d;
+                float hub = st[i] * 0.75f + shipPos[i] * 0.25f;
+                look[i] = earth[i] + (hub - earth[i]) * e - cam[i];
+            }
+            float yaw, pitch;
+            Aim(look[0], look[1], look[2], yaw, pitch);
+            Rotation(yaw, pitch).Apply(cam[0], cam[1], cam[2]);
+            // Moved and turned there in a single step.
+            float perStep = dt > 0 ? 1.0f / dt : 0.0f;
+            velX = cam[0] * perStep;
+            velY = cam[1] * perStep;
+            velZ = cam[2] * perStep;
+            turnRateX = yaw * perStep;
+            turnRateY = pitch * perStep;
+            if (phaseTime > phaseLength) {
+                phase = Undock;
+                phaseTime = 0;
+                phaseLength = kBackingTime;
+            }
+            break;
+        }
+        case Undock:
+        case Rejoin: {
+            // The ship backs slowly away from the hub, still facing it.
+            float u = std::min((phase == Undock ? phaseTime : kBackingTime) / 3.0f, 1.0f);
+            float back = 0.3f * u * u * (3 - 2 * u);
+            for (int i = 0; i < 3; i++) shipPos[i] -= shipFwd[i] * back * dt;
+            speed = back;
+            if (phase == Undock) {
+                velX = velY = velZ = 0;
+                turnRateX = turnRateY = 0;
+                if (phaseTime > phaseLength) {
+                    phase = Rejoin;
+                    phaseTime = 0;
+                    phaseLength = kRejoinTime;
+                }
+            } else {
+                // The camera comes in behind the ship, looking past it at the
+                // station.
+                float target[3];
+                for (int i = 0; i < 3; i++) target[i] = shipPos[i] - shipFwd[i] * kShipAt[2] - shipUp[i] * kShipAt[1];
+                const float gain = 1.2f, fastest = 8.0f;
+                velX = target[0] * gain;
+                velY = target[1] * gain;
+                velZ = target[2] * gain;
+                float sp = sqrtf(velX * velX + velY * velY + velZ * velZ);
+                if (sp > fastest) {
+                    velX *= fastest / sp;
+                    velY *= fastest / sp;
+                    velZ *= fastest / sp;
+                }
+                float yaw, pitch;
+                Aim(shipFwd[0], shipFwd[1], shipFwd[2], yaw, pitch);
+                Steer(yaw, pitch, 2.0f, 0.8f);
+                wide += (0.0f - wide) * std::min(1.0f, dt * 0.7f);
+                if (phaseTime > phaseLength) {
+                    // Then swing round to head out, and jump.
+                    phase = Depart;
+                    phaseTime = 0;
+                    wide = 0;
+                    velX = -shipFwd[0] * 0.3f;
+                    velY = -shipFwd[1] * 0.3f;
+                    velZ = -shipFwd[2] * 0.3f;
+                    leavingStation = true;
+                }
+            }
+            break;
+        }
         case Coast:
             speed = kCoastSpeed;
             if (phaseTime > phaseLength) {
@@ -1268,11 +1496,12 @@ struct Flight {
             break;
         }
         }
-        const bool steered = phase == Approach || phase == Orbit || phase == Depart;
+        const bool steered = phase == Approach || phase == Orbit || phase == Depart || phase == Docked || phase == Undock ||
+                             phase == Rejoin;
 
         warp = std::clamp((speed - kCoastSpeed) / (kMaxSpeed * 0.7f - kCoastSpeed), 0.0f, 1.0f);
         rollRate = 0.05f * sinf((float)t * 0.031f) + 0.025f * sinf((float)t * 0.017f + 2.0f);
-        rollRate *= 1.0f - shipOrbiting;
+        rollRate *= (1.0f - shipOrbiting) * (1.0f - shipDocked);
         roll += rollRate * dt;
         if (planet.on && shipOrbiting > 0.0f) {
             // Straight out from the planet should point up the screen; looking
@@ -1323,7 +1552,8 @@ struct Flight {
             rot.Apply(sun.axis[0], sun.axis[1], sun.axis[2]);
             rot.Apply(sun.side[0], sun.side[1], sun.side[2]);
             sun.beamPhase += dt * 6.2831853f * 0.4f;
-            if (!steered && sun.z < -60.0f) sun.on = false;  // left behind
+            float d2 = sun.x * sun.x + sun.y * sun.y + sun.z * sun.z;
+            if (!steered && (sun.z < -60.0f || d2 > 1000.0f * 1000.0f)) sun.on = false;  // left behind
         }
         if (buoys.on) {
             buoys.time += dt;
@@ -1337,6 +1567,22 @@ struct Flight {
                 if (buoys.time - buoys.released > 8.0f) buoys.on = false;
             }
         }
+        if (phase == Docked || phase == Undock || phase == Rejoin) {
+            rot.Apply(shipPos[0], shipPos[1], shipPos[2]);
+            shipPos[0] -= velX * dt;
+            shipPos[1] -= velY * dt;
+            shipPos[2] -= velZ * dt;
+        }
+        if (station.on) {
+            station.spin += dt * 0.05f;
+            rot.Apply(station.x, station.y, station.z);
+            station.x -= velX * dt;
+            station.y -= velY * dt;
+            station.z -= velZ * dt;
+            for (auto& a : station.axis) rot.Apply(a[0], a[1], a[2]);
+            float d2 = station.x * station.x + station.y * station.y + station.z * station.z;
+            if (!steered && (station.z < -60.0f || d2 > 400.0f * 400.0f)) station.on = false;
+        }
         if (planet.on) {
             rot.Apply(planet.x, planet.y, planet.z);
             planet.x -= velX * dt;
@@ -1347,7 +1593,8 @@ struct Flight {
             planet.spin += dt * 0.03f;
             for (int i = 0; i < planet.moons; i++) planet.moon[i].angle += planet.moon[i].speed * dt;
             planet.age += dt;
-            if (!steered && planet.z < -60.0f) planet.on = false;
+            float d2 = planet.x * planet.x + planet.y * planet.y + planet.z * planet.z;
+            if (!steered && (planet.z < -60.0f || d2 > 1000.0f * 1000.0f)) planet.on = false;
         }
 
         // The ship turns to point the way it is going, and leans into turns.
@@ -1358,6 +1605,16 @@ struct Flight {
             for (int i = 0; i < 3; i++) heading[i] = shipTangent[i];
             sp = 1;
         }
+        if (phase == Docked || phase == Undock || phase == Rejoin) sp = 0;
+        if (phase == Depart && leavingStation) {
+            // Swinging round from the station, the ship turns with the view.
+            heading[0] = heading[1] = 0;
+            heading[2] = 1;
+            sp = 1;
+        }
+        if (phase == Jump) leavingStation = false;
+        shipDocked += ((phase == Docked || phase == Undock || phase == Rejoin ? 1.0f : 0.0f) - shipDocked) *
+                      std::min(1.0f, dt * 0.7f);
         if (sp > 0.05f) {
             float k = std::min(1.0f, dt * 1.5f);
             for (int i = 0; i < 3; i++) shipFwd[i] += (heading[i] - shipFwd[i]) * k;
@@ -1380,7 +1637,8 @@ struct Flight {
             for (int i = 0; i < 3; i++) wantUp[i] += (out[i] - wantUp[i]) * shipOrbiting;
             Normalize(wantUp);
         }
-        for (int i = 0; i < 3; i++) shipUp[i] += (wantUp[i] - shipUp[i]) * std::min(1.0f, dt * 2.0f);
+        if (!(phase == Docked || phase == Undock || phase == Rejoin))  // docked, it keeps the station's up
+            for (int i = 0; i < 3; i++) shipUp[i] += (wantUp[i] - shipUp[i]) * std::min(1.0f, dt * 2.0f);
         Normalize(shipUp);
 
         // The light on the ship: a captured star's, fading as the ship flies
@@ -1393,7 +1651,9 @@ struct Flight {
                 float toSun[3] = {sun.x - kShipAt[0], sun.y - kShipAt[1], sun.z - kShipAt[2]};
                 float d = sqrtf(toSun[0] * toSun[0] + toSun[1] * toSun[1] + toSun[2] * toSun[2]);
                 Normalize(toSun);
-                float w = std::min(sun.age / 3.0f, 1.0f) * std::clamp(1.0f - (d - 90.0f) / 150.0f, 0.0f, 1.0f);
+                // (The station's sun is far off, but lights it all the same.)
+                float reach = std::max(std::clamp(1.0f - (d - 90.0f) / 150.0f, 0.0f, 1.0f), shipDocked);
+                float w = std::min(sun.age / 3.0f, 1.0f) * reach;
                 for (int i = 0; i < 3; i++) {
                     key[i] += (toSun[i] - key[i]) * w;
                     light[i] += (sun.light[i] * 1.2f - light[i]) * w;
@@ -1494,10 +1754,10 @@ static void SpawnStar(Scene& sc, Star& s, float z)
 static void TailOf(const Star& s, float& x, float& y, float& z)
 {
     const Flight& fl = g_flight;
-    const float shutter = kShutter * fl.blur;
-    x = s.x + fl.velX * shutter;
-    y = s.y + fl.velY * shutter;
-    z = s.z + fl.velZ * shutter;
+    const float shutter = kShutter * fl.blur, move = fl.StarsStill() ? 0.0f : shutter;
+    x = s.x + fl.velX * move;
+    y = s.y + fl.velY * move;
+    z = s.z + fl.velZ * move;
     Rotation(fl.turnRateX * shutter, fl.turnRateY * shutter).Undo(x, y, z);
     z = std::max(z, 0.05f);
 }
@@ -1542,9 +1802,11 @@ static void MoveStars(Scene& sc, float dt)
     for (Star& s : sc.field) {
         // The ship turning swings every star the other way around it.
         rot.Apply(s.x, s.y, s.z);
-        s.x -= fl.velX * dt;
-        s.y -= fl.velY * dt;
-        s.z -= fl.velZ * dt;
+        if (!fl.StarsStill()) {
+            s.x -= fl.velX * dt;
+            s.y -= fl.velY * dt;
+            s.z -= fl.velZ * dt;
+        }
         s.age += dt;
         if (s.z < kNear) {
             respawn(s);
@@ -2172,6 +2434,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR cmdLine, int)
         return 0;
     }
     if (g_mode == Mode::Preview && !IsWindow(parent)) return 0;
+    g_flight.StartDocked();
 
     WNDCLASSW wc = {};
     wc.style = CS_OWNDC;

@@ -21,7 +21,8 @@
 enum ShipMaterial { kHull = 0, kExhaust = 1, kWindows = 3, kDark = 4, kTrail = 5, kBeacon = 6,
                     kPodRing = 10,    // pod ring i (0 at the front) is kPodRing + i
                     kStrutLight = 20,    // strut tail light i (0 innermost) is kStrutLight + i
-                    kBuoyLight = 30, kBuoyGrid = 31, kBuoyHull = 32 };
+                    kBuoyLight = 30, kBuoyGrid = 31, kBuoyHull = 32,
+                    kStationWindows = 33, kNavGreen = 34, kDockLight = 35, kSolarPanel = 36, kStationHull = 37 };
 static const int kStrutLights = 6;
 static const int kPodRings = 5;
 
@@ -55,7 +56,7 @@ void main() {
     vMat = aMat;
     float c = cos(uRoll), s = sin(uRoll);
     vec2 q = vec2(p.x * c - p.y * s, p.x * s + p.y * c);
-    const float n = 0.05, f = 20.0;
+    const float n = 0.05, f = 1000.0;
     gl_Position = vec4(q.x * uFocal.x + uShift.x * p.z, q.y * uFocal.y + uShift.y * p.z,
                        p.z * (f + n) / (f - n) - 2.0 * f * n / (f - n), p.z);
 }
@@ -104,7 +105,8 @@ void main() {
         float flicker = 0.75 + 0.25 * sin(uTime * 37.0 - along * 40.0) * sin(uTime * 23.0 + along * 17.0);
         float core = exp(-across * across * 6.0), halo = exp(-across * across * 1.5) * 0.35;
         vec3 c = mix(vec3(0.75, 0.9, 1.0), vec3(0.3, 0.45, 1.0), along);
-        gl_FragColor = vec4(c * (core + halo) * pow(1.0 - along, 2.0) * flicker * power, 0.0);
+        float fade = clamp(1.0 - along, 0.0, 1.0);
+        gl_FragColor = vec4(c * (core + halo) * fade * fade * flicker * power, 0.0);
         return;
     }
     vec3 glow = vec3(0.0);
@@ -130,6 +132,34 @@ void main() {
         // A buoy's hull: dark, gunmetal.
         base = vec3(0.16, 0.16, 0.19);
         shine = 0.8;
+    } else if (mat == 33) {
+        // Rows of station windows, most of them lit, round the station's axis.
+        float ang = atan(vModel.y, vModel.x) / 6.2831853;
+        vec2 g = vec2(ang * 600.0, vModel.z * 9.0);
+        vec2 f = abs(fract(g) - 0.5);
+        float pane = step(f.x, 0.3) * step(f.y, 0.2);
+        float lit = step(0.3, hash1(vec3(floor(g), 3.0)));
+        glow = vec3(1.0, 0.86, 0.6) * pane * lit * 1.3;
+        base = vec3(0.3, 0.3, 0.32);
+    } else if (mat == 34) {
+        // A green navigation light, steady.
+        glow = vec3(0.05, 0.9, 0.25) * 2.0;
+        base = vec3(0.0, 0.3, 0.1);
+    } else if (mat == 35) {
+        // The docking collar's glow.
+        glow = vec3(0.55, 0.8, 1.0) * 0.9;
+        base = vec3(0.4, 0.45, 0.5);
+    } else if (mat == 37) {
+        // The station's hull: a darker grey than the ship's, so the ship shows
+        // against it.
+        base = vec3(0.42, 0.43, 0.46);
+        shine = 0.7;
+    } else if (mat == 36) {
+        // Solar panels: deep blue cells in a fine silver grid.
+        vec2 g = abs(fract(vec2(vModel.x, vModel.z) * 4.0) - 0.5);
+        float frame = step(0.46, max(g.x, g.y));
+        base = mix(vec3(0.04, 0.07, 0.2), vec3(0.6, 0.62, 0.66), frame);
+        shine = 1.2;
     } else if (mat >= 20) {
         // The tail lights along each strut flash one after another from the
         // hull outwards, a sixteenth of a second each, once every 2 seconds.
@@ -189,7 +219,7 @@ void main() {
     float diff = max(dot(n, uLightDir), 0.0);
     vec3 h = normalize(uLightDir + v);
     float spec = pow(max(dot(n, h), 0.0), 48.0) * 0.5 * shine;
-    float fres = pow(1.0 - max(dot(n, v), 0.0), 4.0);
+    float fres = pow(clamp(1.0 - dot(n, v), 0.0, 1.0), 4.0);
     vec3 r = reflect(-v, n);
     vec3 env = mix(vec3(0.02, 0.025, 0.04), vec3(0.22, 0.24, 0.3), smoothstep(-0.3, 0.8, r.y));
     vec3 col = base * (uLight * diff * 0.5 + vec3(0.035, 0.04, 0.05))
@@ -529,11 +559,147 @@ static GLuint MakeLetters()
     return tex;
 }
 
+// A tube along z, centred on (x, y), from z0 to z1.
+static void StationTube(float x, float y, float z0, float z1, float r, int mat)
+{
+    const int sides = 20;
+    for (int k = 0; k < sides; k++) {
+        float a0 = 6.2831853f * k / sides, a1 = 6.2831853f * (k + 1) / sides;
+        float p00[3] = {x + r * cosf(a0), y + r * sinf(a0), z0}, p01[3] = {x + r * cosf(a1), y + r * sinf(a1), z0};
+        float p10[3] = {x + r * cosf(a0), y + r * sinf(a0), z1}, p11[3] = {x + r * cosf(a1), y + r * sinf(a1), z1};
+        float n0[3] = {cosf(a0), sinf(a0), 0}, n1[3] = {cosf(a1), sinf(a1), 0};
+        ShipTri(p00, p10, p11, n0, n0, n1, (float)mat);
+        ShipTri(p00, p11, p01, n0, n1, n1, (float)mat);
+    }
+}
+
+// A tube between two points, with caps at its ends.
+static void StationRod(const float* p0, const float* p1, float r, int mat)
+{
+    float ax[3] = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]}, u[3], v[3], any[3] = {0.31f, 0.93f, 0.17f};
+    Flight::Normalize(ax);
+    Flight::Cross(ax, any, u);
+    Flight::Normalize(u);
+    Flight::Cross(ax, u, v);
+    const int sides = 12;
+    for (int k = 0; k < sides; k++) {
+        float a0 = 6.2831853f * k / sides, a1 = 6.2831853f * (k + 1) / sides;
+        float n0[3], n1[3], q00[3], q01[3], q10[3], q11[3];
+        for (int i = 0; i < 3; i++) {
+            n0[i] = u[i] * cosf(a0) + v[i] * sinf(a0);
+            n1[i] = u[i] * cosf(a1) + v[i] * sinf(a1);
+            q00[i] = p0[i] + n0[i] * r;
+            q01[i] = p0[i] + n1[i] * r;
+            q10[i] = p1[i] + n0[i] * r;
+            q11[i] = p1[i] + n1[i] * r;
+        }
+        ShipTri(q00, q10, q11, n0, n0, n1, (float)mat);
+        ShipTri(q00, q11, q01, n0, n1, n1, (float)mat);
+    }
+}
+
+// The space station: an original design. A single great wheel, some twenty
+// times the ship's length across, turns slowly on six spokes about a hub
+// that stays still, so ships can dock at it. The wheel's outer face is
+// banded with lit windows, with red and green navigation lights round it;
+// the hub has a glowing docking collar on its front face, and an antenna
+// and red beacon behind. In its own units (space units) the wheel lies in
+// the x-y plane, its axis along z, the docking side towards +z.
+static const float kWheelRadius = 9.0f, kWheelTube = 0.85f;
+static std::vector<ShipVertex> g_hubMesh, g_wheelMesh;
+
+static void BuildStation()
+{
+    if (!g_hubMesh.empty()) return;
+
+    // The hub: a drum along the axis, with a collar on its docking face.
+    g_meshOut = &g_hubMesh;
+    {
+        const float drum[][2] = {{0.0f, 1.9f}, {1.2f, 1.85f}, {1.45f, 1.6f}, {1.45f, 0.6f}, {1.45f, -0.6f},
+                                 {1.45f, -1.6f}, {1.2f, -1.85f}, {0.0f, -1.9f}};
+        const int mats[] = {kStationHull, kStationHull, kStationHull, kStationWindows, kStationHull, kStationHull, kStationHull};
+        // Lathed about y; turned to lie along z below.
+        size_t start = g_meshOut->size();
+        ShipLathe(drum, mats, 8, 0.0f, 40);
+        for (size_t i = start; i < g_meshOut->size(); i++) {
+            ShipVertex& vx = (*g_meshOut)[i];
+            float y = vx.p[1], z = vx.p[2], ny = vx.n[1], nz = vx.n[2];
+            vx.p[1] = -z;
+            vx.p[2] = y;
+            vx.n[1] = -nz;
+            vx.n[2] = ny;
+        }
+    }
+    StationTube(0.0f, 0.0f, 1.9f, kHubPort - 0.05f, 0.42f, kStationHull);
+    StationTube(0.0f, 0.0f, kHubPort - 0.05f, kHubPort, 0.5f, kDockLight);
+    {
+        const float m0[3] = {0, 0, -1.9f}, m1[3] = {0, 0, -4.2f};
+        StationRod(m0, m1, 0.05f, kStationHull);
+        const float beacon[][2] = {{0.0f, 0.12f}, {0.09f, 0.08f}, {0.12f, 0.0f}, {0.09f, -0.08f}, {0.0f, -0.12f}};
+        const int bm[] = {kBeacon, kBeacon, kBeacon, kBeacon};
+        float lp[5][2];
+        for (int i = 0; i < 5; i++) {
+            lp[i][0] = beacon[i][0];
+            lp[i][1] = beacon[i][1];
+        }
+        ShipLathe(lp, bm, 5, -4.3f, 12);
+    }
+
+    // The wheel: its rim, a tube bent round the axis, and six spokes.
+    g_meshOut = &g_wheelMesh;
+    {
+        const int around = 120, round = 16;
+        for (int i = 0; i < around; i++)
+            for (int j = 0; j < round; j++) {
+                auto at = [&](int ii, int jj, float* p, float* n) {
+                    float a = 6.2831853f * ii / around, b = 6.2831853f * jj / round;
+                    float cx = cosf(a), cy = sinf(a);
+                    n[0] = cx * cosf(b);
+                    n[1] = cy * cosf(b);
+                    n[2] = sinf(b);
+                    p[0] = cx * kWheelRadius + n[0] * kWheelTube;
+                    p[1] = cy * kWheelRadius + n[1] * kWheelTube;
+                    p[2] = n[2] * kWheelTube;
+                };
+                float p00[3], p01[3], p10[3], p11[3], n00[3], n01[3], n10[3], n11[3];
+                at(i, j, p00, n00);
+                at(i + 1, j, p10, n10);
+                at(i, j + 1, p01, n01);
+                at(i + 1, j + 1, p11, n11);
+                // Windows round the outer face; plain hull elsewhere.
+                float b = 6.2831853f * (j + 0.5f) / round;
+                int mat = cosf(b) > 0.55f ? kStationWindows : kStationHull;
+                ShipTri(p00, p10, p11, n00, n10, n11, (float)mat);
+                ShipTri(p00, p11, p01, n00, n11, n01, (float)mat);
+            }
+    }
+    for (int k = 0; k < 6; k++) {
+        float a = 6.2831853f * k / 6;
+        const float p0[3] = {cosf(a) * 1.4f, sinf(a) * 1.4f, 0}, p1[3] = {cosf(a) * (kWheelRadius - 0.6f), sinf(a) * (kWheelRadius - 0.6f), 0};
+        StationRod(p0, p1, 0.22f, kStationHull);
+    }
+    // Navigation lights round the rim: red on one side of the wheel, green on the other.
+    const float nav[][2] = {{0.0f, 0.12f}, {0.09f, 0.08f}, {0.12f, 0.0f}, {0.09f, -0.08f}, {0.0f, -0.12f}};
+    for (int k = 0; k < 8; k++) {
+        float a = 6.2831853f * (k + 0.5f) / 8;
+        float lp[5][2];
+        for (int i = 0; i < 5; i++) {
+            lp[i][0] = nav[i][0];
+            lp[i][1] = nav[i][1] + sinf(a) * (kWheelRadius + kWheelTube);
+        }
+        int m = k < 4 ? kBeacon : kNavGreen;
+        const int mats[] = {m, m, m, m};
+        ShipLathe(lp, mats, 5, 0.0f, 10, cosf(a) * (kWheelRadius + kWheelTube));
+    }
+    g_meshOut = &g_shipMesh;
+}
+
 static void InitShip(Scene& sc)
 {
     sc.shipLetters = MakeLetters();
     BuildShip();
     BuildBuoy();
+    BuildStation();
     int k = sc.W * 2 <= 4096 && sc.H * 2 <= 4096 ? 2 : 1;
     sc.ship = MakeTarget(sc.W * k, sc.H * k, GL_RGBA16F, false);
     GLuint rb = 0;
@@ -554,7 +720,8 @@ static void DrawShip(Scene& sc)
     // Its axes. Flying free it points the way it flies, upright, tipped back
     // so the camera above and behind sees its back, and leans into turns.
     const float free = 1.0f - fl.shipOrbiting;
-    float fwd[3] = {fl.shipFwd[0], fl.shipFwd[1] + kShipTilt * free, fl.shipFwd[2]};
+    const float tilt = kShipTilt * free * (1.0f - fl.shipDocked);  // level while docked
+    float fwd[3] = {fl.shipFwd[0], fl.shipFwd[1] + tilt, fl.shipFwd[2]};
     float up[3] = {fl.shipUp[0], fl.shipUp[1], fl.shipUp[2]}, right[3];
     // In orbit its top faces straight away from the planet's centre and its
     // bow points along its path round the planet.
@@ -585,7 +752,8 @@ static void DrawShip(Scene& sc)
     Flight::Cross(up, fwd, right);
     Flight::Normalize(right);
     Flight::Cross(fwd, right, up);
-    float cb = cosf(fl.shipBank * free), sb = sinf(fl.shipBank * free);
+    const float bank = fl.shipBank * free * (1.0f - fl.shipDocked);
+    float cb = cosf(bank), sb = sinf(bank);
     float r2[3], u2[3];
     for (int i = 0; i < 3; i++) {
         r2[i] = right[i] * cb + up[i] * sb;
@@ -604,7 +772,8 @@ static void DrawShip(Scene& sc)
     // straight below the camera.
     for (int i = 0; i < 3; i++) at[i] += (fl.shipPos[i] - at[i]) * fl.wide;
     const float below = sqrtf(fl.shipPos[0] * fl.shipPos[0] + fl.shipPos[1] * fl.shipPos[1] + fl.shipPos[2] * fl.shipPos[2]);
-    const float scale = kShipScale + (kShipOverhead * below - kShipScale) * fl.wide;
+    const float distantScale = fl.phase == Flight::Orbit ? kShipOverhead * below : kShipScale;
+    const float scale = kShipScale + (distantScale - kShipScale) * fl.wide;
 
     // Lit by the star it has been captured by, or else dimly, by deep space
     // (worked out in Flight::Update).
@@ -645,6 +814,34 @@ static void DrawShip(Scene& sc)
     glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), v->n);
     glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), &v->m);
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)g_shipMesh.size());
+
+    // The space station, if it is still about: its hub still, its wheel
+    // turning. It is not tied to the ship, so it turns with the view.
+    if (fl.station.on) {
+        const auto& st = fl.station;
+        glUniform3f(glGetUniformLocation(p, "uAt"), st.x, st.y, st.z);
+        glUniform1f(glGetUniformLocation(p, "uScale"), 1.0f);
+        glUniform1f(glGetUniformLocation(p, "uRoll"), fl.roll);
+        glUniform3f(glGetUniformLocation(p, "uFwd"), st.axis[2][0], st.axis[2][1], st.axis[2][2]);
+        for (int part = 0; part < 2; part++) {
+            const std::vector<ShipVertex>& mesh = part == 0 ? g_hubMesh : g_wheelMesh;
+            float spin = part == 0 ? 0.0f : st.spin, c = cosf(spin), sn = sinf(spin);
+            float rx[3], ry[3];
+            for (int i = 0; i < 3; i++) {
+                rx[i] = st.axis[0][i] * c + st.axis[1][i] * sn;
+                ry[i] = st.axis[1][i] * c - st.axis[0][i] * sn;
+            }
+            glUniform3f(glGetUniformLocation(p, "uRight"), rx[0], rx[1], rx[2]);
+            glUniform3f(glGetUniformLocation(p, "uUp"), ry[0], ry[1], ry[2]);
+            const ShipVertex* sv = mesh.data();
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), sv->p);
+            glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), sv->n);
+            glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), &sv->m);
+            glDrawArrays(GL_TRIANGLES, 0, (GLsizei)mesh.size());
+        }
+        glUniform1f(glGetUniformLocation(p, "uRoll"), viewRoll);
+        glUniform1f(glGetUniformLocation(p, "uScale"), scale);
+    }
 
     // Guide buoys: flying in from ahead to flank the ship, spinning, then
     // left behind where they were when it jumps.

@@ -2,6 +2,11 @@
 
 A Windows screensaver: a starship flying through deep space at warp.
 
+- It opens with the ship docked at the hub of a giant rotating wheel of a
+  space station, high above an Earth-like world. The camera starts far out,
+  with the whole planet in view, and closes in over 30 seconds until the
+  wheel fills the screen; then the ship backs slowly out of the hub and
+  goes to warp.
 - Stars stream past with motion blur and Doppler colour, and the ship flies
   on through drifting nebulae. A chase camera follows an original
   saucer-and-twin-pod starship, registry FSS-908, its engine rings pulsing,
