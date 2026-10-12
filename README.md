@@ -15,8 +15,7 @@ A Windows screensaver: a starship flying through deep space at warp.
   follows above and behind it. Half the planets are inhabited, with fields,
   roads and towns by day and city lights by night; half of those are wary
   of visitors, and send two spinning guide buoys to fly alongside the ship
-  and escort it away.
-  Otherwise, after two laps the ship jumps back to warp.
+  and escort it away. After two laps the ship jumps back to warp.
 - Original music, synthesized at startup, crossfades between a cruise theme
   and a calmer orbit theme. If `geoffharvey-starfleet-command-150605.mp3` (or
   whatever `kTrackFile` in `src/music.h` names) is beside the program, it
