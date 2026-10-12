@@ -692,7 +692,6 @@ static const float kWideTime    = 6.0f;    // seconds for the camera to rise abo
 static const float kLowOrbit    = 1.05f;   // the ship's orbit, in planet radii from its centre
 static const float kOverhead    = 0.13f;   // how high above the ship the camera rides, in planet radii
 static const float kBehind     = 1.2f;    // how far the camera trails the ship in orbit, for each unit it is above it
-static const float kWaryTime    = 20.0f;   // seconds in orbit before wary locals escort the ship away
 static const float kArriveAt    = 2.2f;    // how far above the planet's surface the ship stops before descending
 static const float kOrbitTime   = 30.0f;    // seconds for one lap of the planet
 static const int   kOrbits      = 2;        // laps before the ship flies on
@@ -1174,7 +1173,7 @@ struct Flight {
             if ((phaseTime > 2.0f && fabsf(dist - arrive) < 0.4f && speed < 0.5f) || phaseTime > 15.0f) {
                 phase = Orbit;
                 phaseTime = 0;
-                phaseLength = planet.wary ? kWaryTime : kOrbitTime * kOrbits;
+                phaseLength = kOrbitTime * kOrbits;
                 if (planet.wary) {
                     buoys.on = true;
                     buoys.escorting = true;
