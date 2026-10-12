@@ -1,13 +1,14 @@
 // ship.h - the ship, seen from a chase camera above and behind it.
 //
-// An original design: a broad silver-white saucer for the crew, ringed with
-// lit windows, a raised dome on top ringed with windows and a red beacon
-// blinking on it, a tapered delta spine running aft to a faint, steady ion
-// stream, and broad, smoothly streamlined swept wings, rising like a manta's,
-// with a row of red tail lights flashing outwards along their trailing
-// edges, carrying two long cylindrical engine pods high at their tips. The pods have pointed nose
-// cones, glowing exhausts trailing luminous ion streams, and rings of light
-// flashing one after another from front to back, all brighter at warp.
+// An original design: a broad silver-white saucer for the crew, lettered
+// with the ship's registry and ringed with lit windows, a raised dome on top
+// ringed with windows and a red beacon blinking on it, a tapered delta spine
+// running aft to two faint, steady ion streams, and broad, smoothly
+// streamlined swept wings, rising like a manta's, with a row of red tail
+// lights flashing outwards along their trailing edges, carrying two long
+// cylindrical engine pods high at their tips. The pods have pointed nose cones, glowing exhausts
+// trailing luminous ion streams, and rings of light flashing one after
+// another from front to back, all brighter at warp.
 //
 // The camera looks where it always has, riding along with the ship, which
 // flies a little ahead of it and below its line of sight. It is drawn into
@@ -19,10 +20,12 @@
 // Model space: x to starboard, y up, z towards the bow. Materials:
 enum ShipMaterial { kHull = 0, kExhaust = 1, kWindows = 3, kDark = 4, kTrail = 5, kBeacon = 6,
                     kPodRing = 10,    // pod ring i (0 at the front) is kPodRing + i
-                    kStrutLight = 20 };  // strut tail light i (0 innermost) is kStrutLight + i
+                    kStrutLight = 20,    // strut tail light i (0 innermost) is kStrutLight + i
+                    kBuoyLight = 30, kBuoyGrid = 31, kBuoyHull = 32 };
 static const int kStrutLights = 6;
 static const int kPodRings = 5;
 
+static const wchar_t* kRegistry = L"FSS-908";   // lettered across the top of the saucer
 static const float kShipScale = 0.62f;                    // model units to space units
 static const float kShipOverhead = 0.16f;                 // seen from overhead, its size for each unit away
 static const float kPodX = 0.32f, kPodY = 0.17f;          // where the engine pods are, model units
@@ -67,8 +70,14 @@ uniform vec3 uLightDir;   // towards the light
 uniform vec3 uLight;      // its colour and strength
 uniform float uEngine;    // how hard the engines are working
 uniform float uTime;
+uniform sampler2D uLetters; // the registry, white on black
 
 // Thin dark lines between hull plates.
+float hash1(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1) * 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
 float panels(vec3 m) {
     float r = length(m.xz - vec2(0.0, 0.2));
     if (r < 0.37 && abs(m.y) < 0.155) {  // the saucer: rings and spokes
@@ -103,6 +112,24 @@ void main() {
     float shine = 1.0;
     if (mat == 1) {
         glow = vec3(0.55, 0.78, 1.0) * (1.0 + 3.0 * uEngine);
+    } else if (mat == 30) {
+        // A buoy's red warning light: a sharp flash twice a second.
+        glow = vec3(0.9, 0.02, 0.0) * (0.4 + 10.0 * exp(-fract(uTime * 2.0) * 9.0));
+        base = vec3(0.3, 0.0, 0.0);
+    } else if (mat == 31) {
+        // A buoy's side: a grid of small white lights, flickering at random.
+        float ang = atan(vModel.x, vModel.z) / 6.2831853;
+        vec2 g = vec2(ang * 48.0, (vModel.y + 0.07) / 0.14 * 7.0);
+        vec2 f = abs(fract(g) - 0.5);
+        float cellLit = step(max(f.x, f.y), 0.22);
+        float on = step(0.45, hash1(vec3(floor(g), floor(uTime * 7.0))));
+        glow = vec3(1.0, 0.95, 0.85) * cellLit * on * 1.6;
+        base = vec3(0.1, 0.1, 0.12);
+        shine = 0.5;
+    } else if (mat == 32) {
+        // A buoy's hull: dark, gunmetal.
+        base = vec3(0.16, 0.16, 0.19);
+        shine = 0.8;
     } else if (mat >= 20) {
         // The tail lights along each strut flash one after another from the
         // hull outwards, a sixteenth of a second each, once every 2 seconds.
@@ -135,6 +162,19 @@ void main() {
         shine = 0.6;
     }
     base *= mix(0.82, 1.0, panels(vModel));
+    // The registry, in big dark letters arcing round the forward part of
+    // the saucer, facing outwards: their feet towards the rim, reading left
+    // to right from beyond the bow, looking in.
+    if (mat == 0 && vModel.y > 0.03) {
+        float r = length(vModel.xz - vec2(0.0, 0.2));
+        float ang = atan(vModel.x, vModel.z - 0.2);
+        const float r0 = 0.195, r1 = 0.29, span = 1.6;
+        if (r > r0 && r < r1 && abs(ang) < span * 0.5) {
+            vec2 uv = vec2(0.5 - ang / span, (r - r0) / (r1 - r0));
+            float ink = texture(uLetters, uv).r;
+            base = mix(base, vec3(0.14, 0.14, 0.16), ink * 0.9);
+        }
+    }
     // A ring of windows round the side of the raised dome on top.
     if (mat == 0 && vModel.y > 0.03) {
         float r = length(vModel.xz - vec2(0.0, 0.2));
@@ -173,13 +213,14 @@ struct ShipVertex {
     float p[3], n[3], m;
 };
 
-static std::vector<ShipVertex> g_shipMesh;
+static std::vector<ShipVertex> g_shipMesh, g_buoyMesh;
+static std::vector<ShipVertex>* g_meshOut = &g_shipMesh;  // where ShipTri adds triangles
 
 static void ShipTri(const float* a, const float* b, const float* c, const float* na, const float* nb, const float* nc, float m)
 {
-    g_shipMesh.push_back({{a[0], a[1], a[2]}, {na[0], na[1], na[2]}, m});
-    g_shipMesh.push_back({{b[0], b[1], b[2]}, {nb[0], nb[1], nb[2]}, m});
-    g_shipMesh.push_back({{c[0], c[1], c[2]}, {nc[0], nc[1], nc[2]}, m});
+    g_meshOut->push_back({{a[0], a[1], a[2]}, {na[0], na[1], na[2]}, m});
+    g_meshOut->push_back({{b[0], b[1], b[2]}, {nb[0], nb[1], nb[2]}, m});
+    g_meshOut->push_back({{c[0], c[1], c[2]}, {nc[0], nc[1], nc[2]}, m});
 }
 
 // A flat-shaded quad, corners in order round its edge.
@@ -380,9 +421,119 @@ static void BuildShip()
 // ---------------------------------------------------------------------------
 // Drawing
 
+// A guide buoy: a dark spindle with a six-sided waist covered in a grid of
+// small lights, tapering to a red warning light at each end, with a thin
+// collar flaring round its middle. It spins about its long (y) axis.
+static void BuildBuoy()
+{
+    if (!g_buoyMesh.empty()) return;
+    g_meshOut = &g_buoyMesh;
+    const float r = 0.08f, h = 0.07f, tip = 0.18f, collar = 0.13f, lip = 0.008f;
+    float ring[6][3];
+    for (int i = 0; i < 6; i++) {
+        float a = 6.2831853f * (i + 0.5f) / 6;
+        ring[i][0] = r * sinf(a);
+        ring[i][2] = r * cosf(a);
+    }
+    for (int i = 0; i < 6; i++) {
+        int j = (i + 1) % 6;
+        float b0[3] = {ring[i][0], -h, ring[i][2]}, b1[3] = {ring[j][0], -h, ring[j][2]};
+        float t0[3] = {ring[i][0], h, ring[i][2]}, t1[3] = {ring[j][0], h, ring[j][2]};
+        ShipQuad(b0, b1, t1, t0, kBuoyGrid);  // a lit side panel
+        float top[3] = {0, tip, 0}, bottom[3] = {0, -tip, 0};
+        float e1[3] = {t1[0] - t0[0], t1[1] - t0[1], t1[2] - t0[2]}, e2[3] = {top[0] - t0[0], top[1] - t0[1], top[2] - t0[2]}, n[3];
+        Flight::Cross(e1, e2, n);
+        Flight::Normalize(n);
+        ShipTri(t0, t1, top, n, n, n, kBuoyHull);
+        float f1[3] = {b0[0] - b1[0], b0[1] - b1[1], b0[2] - b1[2]}, f2[3] = {bottom[0] - b1[0], bottom[1] - b1[1], bottom[2] - b1[2]};
+        Flight::Cross(f1, f2, n);
+        Flight::Normalize(n);
+        ShipTri(b1, b0, bottom, n, n, n, kBuoyHull);
+        // The collar round the waist: top, rim and underside.
+        float ci0[3] = {ring[i][0], lip, ring[i][2]}, ci1[3] = {ring[j][0], lip, ring[j][2]};
+        float co0[3] = {ring[i][0] * collar / r, lip, ring[i][2] * collar / r}, co1[3] = {ring[j][0] * collar / r, lip, ring[j][2] * collar / r};
+        ShipQuad(ci0, co0, co1, ci1, kBuoyHull);
+        float cu0[3] = {co0[0], -lip, co0[2]}, cu1[3] = {co1[0], -lip, co1[2]};
+        ShipQuad(co0, cu0, cu1, co1, kBuoyHull);
+        float di0[3] = {ring[i][0], -lip, ring[i][2]}, di1[3] = {ring[j][0], -lip, ring[j][2]};
+        ShipQuad(di1, cu1, cu0, di0, kBuoyHull);
+    }
+    // A red warning light at each end.
+    const float light[][2] = {{0.0f, 0.016f}, {0.011f, 0.011f}, {0.016f, 0.0f}, {0.011f, -0.011f}, {0.0f, -0.016f}};
+    float lp[5][2];
+    const int mats[] = {kBuoyLight, kBuoyLight, kBuoyLight, kBuoyLight};
+    for (float end : {tip + 0.006f, -tip - 0.006f}) {
+        for (int i = 0; i < 5; i++) {
+            lp[i][0] = light[i][0];
+            lp[i][1] = light[i][1] + end;
+        }
+        ShipLathe(lp, mats, 5, 0.0f, 12);
+    }
+    g_meshOut = &g_shipMesh;
+}
+
+// Draws the registry into a texture, white on black, filling it edge to edge.
+static GLuint MakeLetters()
+{
+    const int w = 1024, hgt = 160;
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -hgt;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    void* bits = nullptr;
+    HDC dc = CreateCompatibleDC(nullptr);
+    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HGDIOBJ oldBmp = SelectObject(dc, bmp);
+    RECT all = {0, 0, w, hgt};
+    FillRect(dc, &all, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    HFONT font = CreateFontW(-(int)(hgt * 1.25f), 0, 0, 0, FW_BLACK, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                             OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Arial Black");
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    SetTextColor(dc, RGB(255, 255, 255));
+    SetBkMode(dc, TRANSPARENT);
+    // Squeeze the text to fit the width; centre it.
+    SIZE size;
+    GetTextExtentPoint32W(dc, kRegistry, (int)wcslen(kRegistry), &size);
+    XFORM squeeze = {std::min(1.0f, w * 0.96f / size.cx), 0, 0, 1, 0, 0};
+    SetGraphicsMode(dc, GM_ADVANCED);
+    SetWorldTransform(dc, &squeeze);
+    RECT box = {0, -(int)(hgt * 0.22f), (LONG)(w / squeeze.eM11), hgt};
+    DrawTextW(dc, kRegistry, -1, &box, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+    GdiFlush();
+
+    std::vector<uint8_t> rgba((size_t)w * hgt * 4);
+    const uint8_t* px = (const uint8_t*)bits;
+    for (int i = 0; i < w * hgt; i++) {
+        uint8_t v = px[i * 4 + 1];
+        rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = v;
+        rgba[i * 4 + 3] = 255;
+    }
+    SelectObject(dc, oldFont);
+    SelectObject(dc, oldBmp);
+    DeleteObject(font);
+    DeleteObject(bmp);
+    DeleteDC(dc);
+
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, hgt, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    return tex;
+}
+
 static void InitShip(Scene& sc)
 {
+    sc.shipLetters = MakeLetters();
     BuildShip();
+    BuildBuoy();
     int k = sc.W * 2 <= 4096 && sc.H * 2 <= 4096 ? 2 : 1;
     sc.ship = MakeTarget(sc.W * k, sc.H * k, GL_RGBA16F, false);
     GLuint rb = 0;
@@ -493,6 +644,9 @@ static void DrawShip(Scene& sc)
     glUniform3f(glGetUniformLocation(p, "uLight"), light[0], light[1], light[2]);
     glUniform1f(glGetUniformLocation(p, "uEngine"), std::min(1.0f, 0.15f + 0.85f * fl.warp + fl.flash * 3.0f));
     glUniform1f(glGetUniformLocation(p, "uTime"), t);
+    BindTexture(1, sc.shipLetters);
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(glGetUniformLocation(p, "uLetters"), 1);
     const ShipVertex* v = g_shipMesh.data();
     glEnableVertexAttribArray(0);
     glEnableVertexAttribArray(4);
@@ -501,6 +655,38 @@ static void DrawShip(Scene& sc)
     glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), v->n);
     glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), &v->m);
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)g_shipMesh.size());
+
+    // Guide buoys: flying in from ahead to flank the ship, spinning, then
+    // left behind where they were when it jumps.
+    if (fl.buoys.on) {
+        auto& buoys = g_flight.buoys;
+        float in = std::min(buoys.time / 5.0f, 1.0f);
+        in = in * in * (3 - 2 * in);
+        const ShipVertex* bv = g_buoyMesh.data();
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), bv->p);
+        glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), bv->n);
+        glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), &bv->m);
+        for (int k = 0; k < 2; k++) {
+            float side = k == 0 ? -1.0f : 1.0f;
+            if (buoys.escorting) {
+                // Off each side of the ship, a little above; streaking in
+                // from far ahead at first.
+                float sx = side * (0.9f + 2.6f * (1 - in)), sy = 0.06f + 0.9f * (1 - in), sz = 0.05f + 5.0f * (1 - in);
+                for (int i = 0; i < 3; i++) buoys.pos[k][i] = at[i] + (r2[i] * sx + u2[i] * sy + fwd[i] * sz) * scale;
+            }
+            float spin = buoys.time * 1.8f * side, cs = cosf(spin), sn = sinf(spin);
+            float br[3], bf[3];
+            for (int i = 0; i < 3; i++) {
+                br[i] = r2[i] * cs + fwd[i] * sn;
+                bf[i] = fwd[i] * cs - r2[i] * sn;
+            }
+            glUniform3f(glGetUniformLocation(p, "uRight"), br[0], br[1], br[2]);
+            glUniform3f(glGetUniformLocation(p, "uUp"), u2[0], u2[1], u2[2]);
+            glUniform3f(glGetUniformLocation(p, "uFwd"), bf[0], bf[1], bf[2]);
+            glUniform3f(glGetUniformLocation(p, "uAt"), buoys.pos[k][0], buoys.pos[k][1], buoys.pos[k][2]);
+            glDrawArrays(GL_TRIANGLES, 0, (GLsizei)g_buoyMesh.size());
+        }
+    }
 
     // Ion trails streaming back from the exhausts: ribbons turned to face the
     // camera, longer and brighter the harder the engines work. Their
@@ -540,8 +726,10 @@ static void DrawShip(Scene& sc)
         addTrail(m, length, kPodR * scale * 0.7f, kPodR * scale * 1.4f, false);
     }
     // From the tip of the spine: faint and steady, warp or no warp.
-    const float spineTip[3] = {0.0f, -0.015f, -0.505f};
-    addTrail(spineTip, 1.2f * scale, kPodR * scale * 0.45f, kPodR * scale * 0.9f, true);
+    for (int side = -1; side <= 1; side += 2) {
+        const float spineTip[3] = {side * 0.014f, -0.015f, -0.505f};
+        addTrail(spineTip, 1.2f * scale, kPodR * scale * 0.32f, kPodR * scale * 0.65f, true);
+    }
     glUniform3f(glGetUniformLocation(p, "uRight"), 1, 0, 0);
     glUniform3f(glGetUniformLocation(p, "uUp"), 0, 1, 0);
     glUniform3f(glGetUniformLocation(p, "uFwd"), 0, 0, 1);

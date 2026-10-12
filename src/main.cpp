@@ -685,12 +685,14 @@ static const float kReach       = 20.0f;    // how close a star must pass to pul
 static const float kSwing       = 0.8f;     // seconds over which a star's pull swings the ship round
 static const float kMaxTurn     = 0.3f;     // fastest the ship turns, radians per second
 static const float kCapture     = 5.0f;     // a star passing closer than this captures the ship
-static const float kCaptureRest = 60.0f;    // seconds after an orbit before the ship can be captured again
+static const float kCaptureRest = 30.0f;    // seconds after an orbit before the ship can be captured again
+static const float kHabitableChance = 0.5f;  // how often a planet visited is an inhabited world
 static const float kShipAt[3]  = {0.0f, -0.48f, 1.6f};  // where the ship flies, from the camera behind it
 static const float kWideTime    = 6.0f;    // seconds for the camera to rise above the ship in orbit, or come back down
 static const float kLowOrbit    = 1.05f;   // the ship's orbit, in planet radii from its centre
 static const float kOverhead    = 0.13f;   // how high above the ship the camera rides, in planet radii
 static const float kBehind     = 1.2f;    // how far the camera trails the ship in orbit, for each unit it is above it
+static const float kWaryTime    = 20.0f;   // seconds in orbit before wary locals escort the ship away
 static const float kArriveAt    = 2.2f;    // how far above the planet's surface the ship stops before descending
 static const float kOrbitTime   = 30.0f;    // seconds for one lap of the planet
 static const int   kOrbits      = 2;        // laps before the ship flies on
@@ -944,6 +946,7 @@ struct Flight {
         float colA[3], colB[3], colC[3], atm[3];
         float seed[3];
         bool rings;
+        bool wary;         // its people will send buoys to escort the ship away
         float ringCol[3];
         float age;
         // Its moons.
@@ -969,6 +972,15 @@ struct Flight {
     float shipBank = 0;                  // how far it leans into a turn, radians
     float shipUp[3] = {0, 1, 0};         // which way its deck faces
     float shipOrbiting = 0;              // 0 flying free .. 1 settled in orbit, belly to the planet
+    // Guide buoys sent up by a wary planet: they fly in to flank the ship as
+    // it enters orbit, escort it away, and are left behind when it jumps.
+    struct {
+        bool on = false;
+        bool escorting;
+        float time;                      // since they appeared
+        float released;                  // when the ship left them behind
+        float pos[2][3];                 // where they are, seen from the camera
+    } buoys;
 
     std::mt19937 rng{(unsigned)GetTickCount()};
 
@@ -1051,7 +1063,12 @@ struct Flight {
         planet.spin = Rand() * 6.2831853f;
 
         // What sort of planet, and its own colours, size and rings.
-        int kind = std::min(kPlanetKindCount - 1, (int)(Rand() * kPlanetKindCount));
+        // Half the planets are inhabited worlds; the rest are spread over
+        // the other kinds.
+        static const int kHabitable[] = {0, 5, 7};
+        static const int kWild[] = {1, 2, 3, 4, 6, 8, 9};
+        int kind = Rand() < kHabitableChance ? kHabitable[std::min(2, (int)(Rand() * 3))]
+                                             : kWild[std::min(6, (int)(Rand() * 7))];
         const PlanetKind& pk = kPlanetKinds[kind];
         int palette = std::min(pk.palettes - 1, (int)(Rand() * pk.palettes));
         planet.kind = kind;
@@ -1062,6 +1079,7 @@ struct Flight {
         for (float& v : planet.seed) v = Rand() * 100.0f;
         planet.radius = pk.radius * (0.85f + 0.3f * Rand());
         planet.rings = Rand() < pk.ringChance;
+        planet.wary = (kind == 0 || kind == 5 || kind == 7) && Rand() < 0.5f;  // half the inhabited worlds
         static const float kRingColors[2][3] = {{0.85f, 0.75f, 0.6f}, {0.75f, 0.8f, 0.85f}};
         Vary(kRingColors[Rand() < 0.5f], planet.ringCol, 0.25f);
         planet.orbitRadius = planet.radius * kLowOrbit;  // close to the surface, under any rings
@@ -1156,7 +1174,12 @@ struct Flight {
             if ((phaseTime > 2.0f && fabsf(dist - arrive) < 0.4f && speed < 0.5f) || phaseTime > 15.0f) {
                 phase = Orbit;
                 phaseTime = 0;
-                phaseLength = kOrbitTime * kOrbits;
+                phaseLength = planet.wary ? kWaryTime : kOrbitTime * kOrbits;
+                if (planet.wary) {
+                    buoys.on = true;
+                    buoys.escorting = true;
+                    buoys.time = 0;
+                }
                 // Circle round in the plane that holds the star, so that
                 // partway round the star passes behind the planet.
                 float toPlanet[3] = {planet.x, planet.y, planet.z};
@@ -1236,6 +1259,10 @@ struct Flight {
                 phase = Jump;
                 phaseTime = 0;
                 phaseLength = 2.0f;
+                if (buoys.on && buoys.escorting) {
+                    buoys.escorting = false;
+                    buoys.released = buoys.time;
+                }
             }
             break;
         }
@@ -1296,6 +1323,18 @@ struct Flight {
             rot.Apply(sun.side[0], sun.side[1], sun.side[2]);
             sun.beamPhase += dt * 6.2831853f * 0.4f;
             if (!steered && sun.z < -60.0f) sun.on = false;  // left behind
+        }
+        if (buoys.on) {
+            buoys.time += dt;
+            if (!buoys.escorting) {
+                for (auto& b : buoys.pos) {
+                    rot.Apply(b[0], b[1], b[2]);
+                    b[0] -= velX * dt;
+                    b[1] -= velY * dt;
+                    b[2] -= velZ * dt;
+                }
+                if (buoys.time - buoys.released > 8.0f) buoys.on = false;
+            }
         }
         if (planet.on) {
             rot.Apply(planet.x, planet.y, planet.z);
@@ -1379,6 +1418,7 @@ struct Scene {
     Target nebula, stars, blurA, blurB, shot;
     Target ship;          // the ship, drawn larger than the screen and shrunk to smooth its edges
     GLuint progShip = 0, progShipDown = 0;
+    GLuint shipLetters = 0;  // the ship's registry, lettered on its saucer
 
     std::vector<Star> field;
     float feed = 0;       // stars owed to the edge the ship is turning towards
