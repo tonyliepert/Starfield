@@ -606,20 +606,10 @@ static void DrawShip(Scene& sc)
     const float below = sqrtf(fl.shipPos[0] * fl.shipPos[0] + fl.shipPos[1] * fl.shipPos[1] + fl.shipPos[2] * fl.shipPos[2]);
     const float scale = kShipScale + (kShipOverhead * below - kShipScale) * fl.wide;
 
-    // Lit by the star it has been captured by, or else by a soft light from
-    // above and behind.
-    float key[3] = {0.35f, 0.85f, -0.4f}, light[3] = {1.0f, 0.97f, 0.92f};
-    Flight::Normalize(key);
-    if (fl.sun.on) {
-        float toSun[3] = {fl.sun.x - at[0], fl.sun.y - at[1], fl.sun.z - at[2]};
-        Flight::Normalize(toSun);
-        float w = std::min(fl.sun.age / 3.0f, 1.0f);
-        for (int i = 0; i < 3; i++) {
-            key[i] += (toSun[i] - key[i]) * w;
-            light[i] += (fl.sun.light[i] * 1.2f - light[i]) * w;
-        }
-        Flight::Normalize(key);
-    }
+    // Lit by the star it has been captured by, or else dimly, by deep space
+    // (worked out in Flight::Update).
+    const float* key = fl.shipKey;
+    const float* light = fl.shipLight;
 
     const float cx = sc.W * 0.5f + fl.headingX * sc.H, cy = sc.H * 0.5f + fl.headingY * sc.H;  // y up
     const float f = kFocal * sc.H;

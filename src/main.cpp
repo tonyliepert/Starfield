@@ -971,6 +971,8 @@ struct Flight {
     float shipBank = 0;                  // how far it leans into a turn, radians
     float shipUp[3] = {0, 1, 0};         // which way its deck faces
     float shipOrbiting = 0;              // 0 flying free .. 1 settled in orbit, belly to the planet
+    float shipLight[3] = {0.38f, 0.4f, 0.45f};  // colour and strength of the light on the ship
+    float shipKey[3] = {0.35f, 0.85f, -0.4f};   // the way that light comes from
     // Guide buoys sent up by a wary planet: they fly in to flank the ship as
     // it enters orbit, escort it away, and are left behind when it jumps.
     struct {
@@ -1380,6 +1382,31 @@ struct Flight {
         }
         for (int i = 0; i < 3; i++) shipUp[i] += (wantUp[i] - shipUp[i]) * std::min(1.0f, dt * 2.0f);
         Normalize(shipUp);
+
+        // The light on the ship: a captured star's, fading as the ship flies
+        // away from it, or the dim glow of deep space. It changes gradually.
+        {
+            static const float kDeep[3] = {0.38f, 0.4f, 0.45f};
+            float key[3] = {0.35f, 0.85f, -0.4f}, light[3] = {kDeep[0], kDeep[1], kDeep[2]};
+            Normalize(key);
+            if (sun.on) {
+                float toSun[3] = {sun.x - kShipAt[0], sun.y - kShipAt[1], sun.z - kShipAt[2]};
+                float d = sqrtf(toSun[0] * toSun[0] + toSun[1] * toSun[1] + toSun[2] * toSun[2]);
+                Normalize(toSun);
+                float w = std::min(sun.age / 3.0f, 1.0f) * std::clamp(1.0f - (d - 90.0f) / 150.0f, 0.0f, 1.0f);
+                for (int i = 0; i < 3; i++) {
+                    key[i] += (toSun[i] - key[i]) * w;
+                    light[i] += (sun.light[i] * 1.2f - light[i]) * w;
+                }
+                Normalize(key);
+            }
+            float k = std::min(1.0f, dt * 0.6f);
+            for (int i = 0; i < 3; i++) {
+                shipLight[i] += (light[i] - shipLight[i]) * k;
+                shipKey[i] += (key[i] - shipKey[i]) * k;
+            }
+            Normalize(shipKey);
+        }
 
         // Stars stop streaking once the ship has settled into orbit.
         bool still = phase == Orbit || (phase == Approach && speed < 2.0f);
