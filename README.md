@@ -3,10 +3,11 @@
 A Windows screensaver: a starship flying through deep space at warp.
 
 - It opens with the ship docked at the hub of a giant rotating wheel of a
-  space station, high above an Earth-like world. The camera starts far out,
-  with the whole planet in view, and closes in over 30 seconds until the
-  wheel fills the screen; then the ship backs slowly out of the hub and
-  goes to warp.
+  space station, parked at the L1 Lagrange point between an Earth-like world
+  and its Moon. The camera starts far off to the side, with the Earth and
+  the Moon both in view, and closes in over 30 seconds until the wheel fills
+  the screen; then the ship backs slowly out of the hub, swings out past the
+  Moon and goes to warp.
 - Stars stream past with motion blur and Doppler colour, and the ship flies
   on through drifting nebulae. A chase camera follows an original
   saucer-and-twin-pod starship, registry FSS-908, its engine rings pulsing,
@@ -17,10 +18,11 @@ A Windows screensaver: a starship flying through deep space at warp.
   star, or a red giant with a neutron star pulling a stream of gas off it
   into a glowing disc. It then descends into a low orbit around one of ten
   kinds of procedural planet, with up to three moons, while the camera
-  follows above and behind it. Half the planets are inhabited, with fields,
-  roads and towns by day and city lights by night; half of those are wary
-  of visitors, and send two spinning guide buoys to fly alongside the ship
-  and escort it away. After two laps the ship jumps back to warp.
+  follows above and behind it. Planets vary in size, and some are huge.
+  Half the planets of ordinary stars are inhabited (never a neutron
+  star's), with fields, roads and towns by day and city lights by night;
+  half of those are wary of visitors, and send two spinning guide buoys to
+  fly alongside the ship and escort it away. After two laps the ship jumps back to warp.
 - Original music, synthesized at startup, crossfades between a cruise theme
   and a calmer orbit theme. If `geoffharvey-starfleet-command-150605.mp3` (or
   whatever `kTrackFile` in `src/music.h` names) is beside the program, it

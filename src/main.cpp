@@ -366,6 +366,7 @@ uniform vec3 uRingCol;
 uniform float uFade;
 uniform int uOctaves;     // finer detail when seen up close
 uniform int uCivilized;   // a habitable world with people on it
+uniform float uStraighten; // 1 to draw it round wherever it is on the screen (see main)
 
 float hash(vec3 p) {
     p = fract(p * 0.3183099 + 0.1);
@@ -573,7 +574,19 @@ float ringShadow(vec3 x) {
 void main() {
     vec2 s = (gl_FragCoord.xy - uCenter) / uFocal;
     float c = cos(uRoll), sn = sin(uRoll);
-    vec3 d = normalize(vec3(s.x * c + s.y * sn, -s.x * sn + s.y * c, 1.0));
+    vec2 v = vec2(s.x * c + s.y * sn, -s.x * sn + s.y * c);
+    vec3 d = normalize(vec3(v, 1.0));
+    // A wide view stretches a sphere far off to the side into an oval. Seen
+    // as if looking straight at it, at the scale the view has there, it
+    // stays round.
+    if (uStraighten > 0.0 && uPos.z > 0.0) {
+        vec3 f = normalize(uPos);
+        vec2 off = v - uPos.xy / uPos.z;
+        vec3 across = normalize(vec3(f.z, 0.0, -f.x));
+        vec3 up = cross(f, across);
+        vec3 straight = normalize(f + (across * off.x + up * off.y) * f.z);
+        d = normalize(mix(d, straight, uStraighten * smoothstep(0.3, 0.6, f.z)));
+    }
 
     float b = dot(d, uPos);
     float h = sqrt(max(dot(uPos, uPos) - b * b, 0.0));  // how close the ray passes to the centre
@@ -691,19 +704,22 @@ static const float kShipAt[3]  = {0.0f, -0.48f, 1.6f};  // where the ship flies,
 static const float kWideTime    = 6.0f;    // seconds for the camera to rise above the ship in orbit, or come back down
 static const float kLowOrbit    = 1.05f;   // the ship's orbit, in planet radii from its centre
 static const float kOverhead    = 0.13f;   // how high above the ship the camera rides, in planet radii
+static const float kOrbitScale  = 2.5f;    // over a planet bigger than this the orbit and camera are no higher than over this one
 static const float kBehind     = 1.2f;    // how far the camera trails the ship in orbit, for each unit it is above it
 static const float kShipBow = 0.56f * 0.62f;  // the ship's bow, ahead of its centre (model bow times its scale)
 static const float kHubPort = 2.05f;      // the station's docking collar, ahead of its centre along its axis
 static const float kRejoinTime = 6.0f;    // seconds for the camera to come in behind the ship after undocking
 static const float kDockedTime  = 30.0f;   // seconds docked at the station before setting out
 static const float kBackingTime = 10.0f;   // seconds backing away from it
-static const float kEarthRadius = 150.0f;  // the Earth the station circles
-static const float kStationOrbit = 172.0f; // the station's distance from the Earth's centre
-static const float kDockedFrom = 150.0f;   // the camera's distance from the station when it starts
+static const float kEarthRadius = 150.0f;  // the Earth the station keeps company with
+static const float kMoonDistance = 700.0f; // from the Earth's centre to its Moon's
+static const float kLagrange   = 0.85f;    // the station rides at the Earth-Moon L1 point, this far from Earth to Moon
+static const float kDockedFrom = 380.0f;   // the camera's distance from the station when it starts
 static const float kDockedTo   = 11.0f;    // and when it has closed in, the wheel filling the screen
-static const float kDockedView[3] = {0.35f, 0.25f, 1.0f};  // the way the camera looks back from, in the station's axes
+static const float kDockedWide[3] = {1.0f, 0.3f, 0.15f};   // the way the camera looks from when it starts, off to the side
+static const float kDockedView[3] = {0.35f, 0.25f, 1.0f};  // and when it has closed in, in the station's axes
 static const float kArriveAt    = 2.2f;    // how far above the planet's surface the ship stops before descending
-static const float kOrbitTime   = 30.0f;    // seconds for one lap of the planet
+static const float kOrbitTime   = 30.0f;    // seconds for one lap of the planet (longer round a huge one)
 static const int   kOrbits      = 2;        // laps before the ship flies on
 
 // The stars that can capture the ship.
@@ -949,6 +965,7 @@ struct Flight {
         bool on = false;
         float x, y, z;
         float radius, orbitRadius;
+        float lap;             // seconds for the ship to go once round it
         float axis[3][3];      // its own axes; it spins about the second
         float spin;
         int kind;              // see kPlanetKinds
@@ -1056,18 +1073,34 @@ struct Flight {
         RandomFrame(sun.axis, sun.side);
         sun.beamPhase = 0;
 
+        // What sort of planet, and its own colours, size and rings.
+        // Half the planets are inhabited worlds; the rest are spread over
+        // the other kinds. Nobody lives under the glare of a neutron star.
+        static const int kHabitable[] = {0, 5, 7};
+        static const int kWild[] = {1, 2, 3, 4, 6, 8, 9};
+        const bool harsh = sun.kind == kNeutronStar || sun.kind == kDoubleStar;
+        int kind = !harsh && Rand() < kHabitableChance ? kHabitable[std::min(2, (int)(Rand() * 3))]
+                                                       : kWild[std::min(6, (int)(Rand() * 7))];
+        const PlanetKind& pk = kPlanetKinds[kind];
+        // Most planets are near their kind's usual size, a few much smaller
+        // and some huge: giants most often, but now and then a vast rocky world.
+        float big = kind == 2 || kind == 9 ? 0.35f : 0.15f;
+        planet.radius = pk.radius * (Rand() < big ? 2.5f + 3.0f * Rand() : 0.55f + 0.9f * Rand());
+
         // Its planet is on the near side of it, off to one side, so the ship
-        // reaches the planet first and sees the star beyond.
+        // reaches the planet first and sees the star beyond; a huge one
+        // circles farther out, clear of the star.
         float toSun[3] = {s.x, s.y, s.z}, side[3], any[3] = {Rand() - 0.5f, Rand() - 0.5f, Rand() - 0.5f};
         Normalize(toSun);
         Cross(toSun, any, side);
         Normalize(side);
         float off[3];
         for (int i = 0; i < 3; i++) off[i] = -0.6f * toSun[i] + 0.8f * side[i];
+        const float away = std::max(sk.planetDistance, sk.radius + 3.5f * planet.radius);
         planet.on = true;
-        planet.x = s.x + off[0] * sk.planetDistance;
-        planet.y = s.y + off[1] * sk.planetDistance;
-        planet.z = s.z + off[2] * sk.planetDistance;
+        planet.x = s.x + off[0] * away;
+        planet.y = s.y + off[1] * away;
+        planet.z = s.z + off[2] * away;
         // Spinning about an axis tipped a little from upright.
         float* a0 = planet.axis[0];
         float* a1 = planet.axis[1];
@@ -1082,14 +1115,6 @@ struct Flight {
         Cross(a0, a1, a2);
         planet.spin = Rand() * 6.2831853f;
 
-        // What sort of planet, and its own colours, size and rings.
-        // Half the planets are inhabited worlds; the rest are spread over
-        // the other kinds.
-        static const int kHabitable[] = {0, 5, 7};
-        static const int kWild[] = {1, 2, 3, 4, 6, 8, 9};
-        int kind = Rand() < kHabitableChance ? kHabitable[std::min(2, (int)(Rand() * 3))]
-                                             : kWild[std::min(6, (int)(Rand() * 7))];
-        const PlanetKind& pk = kPlanetKinds[kind];
         int palette = std::min(pk.palettes - 1, (int)(Rand() * pk.palettes));
         planet.kind = kind;
         Vary(pk.colors[palette][0], planet.colA, 0.3f);
@@ -1097,27 +1122,38 @@ struct Flight {
         Vary(pk.colors[palette][2], planet.colC, 0.3f);
         Vary(pk.colors[palette][3], planet.atm, 0.2f);
         for (float& v : planet.seed) v = Rand() * 100.0f;
-        planet.radius = pk.radius * (0.85f + 0.3f * Rand());
         planet.rings = Rand() < pk.ringChance;
         planet.wary = (kind == 0 || kind == 5 || kind == 7) && Rand() < 0.5f;  // half the inhabited worlds
         static const float kRingColors[2][3] = {{0.85f, 0.75f, 0.6f}, {0.75f, 0.8f, 0.85f}};
         Vary(kRingColors[Rand() < 0.5f], planet.ringCol, 0.25f);
-        planet.orbitRadius = planet.radius * kLowOrbit;  // close to the surface, under any rings
+        // Close to the surface, under any rings; over a huge world no higher
+        // than over an ordinary one, so the ship stays in view.
+        const float scale = std::min(planet.radius, kOrbitScale);
+        planet.orbitRadius = planet.radius + (kLowOrbit - 1.0f) * scale;
+        // Round a huge world the laps are longer, so the ground below
+        // doesn't rush past too fast.
+        planet.lap = kOrbitTime * sqrtf(planet.radius / scale);
         planet.age = 0;
 
-        // Moons: up to three, the nearer ones quicker, all clear of any rings.
+        // Moons: up to three, the nearer ones quicker, all clear of any rings
+        // and well clear of the star. A huge world's moons are no bigger and
+        // no more spread out than an ordinary one's.
         float m = Rand();
-        planet.moons = m < 0.25f ? 0 : m < 0.6f ? 1 : m < 0.85f ? 2 : 3;
+        int moons = m < 0.25f ? 0 : m < 0.6f ? 1 : m < 0.85f ? 2 : 3;
         float reach = planet.radius * (planet.rings ? 2.8f : 2.0f);
+        const float moonScale = std::min(planet.radius, 4.0f);
         static const int kMoonKinds[3] = {8, 3, 1};  // cratered rock, ice, desert
-        for (int i = 0; i < planet.moons; i++) {
+        planet.moons = 0;
+        for (int i = 0; i < moons; i++) {
             auto& mn = planet.moon[i];
-            reach += planet.radius * (0.8f + 0.9f * Rand());
+            reach += moonScale * (0.8f + 0.9f * Rand());
+            mn.radius = moonScale * (0.12f + 0.16f * Rand());
+            if (reach + mn.radius > away - sk.radius - 2.0f) break;
+            planet.moons++;
             mn.distance = reach;
             mn.angle = Rand() * 6.2831853f;
             mn.speed = 0.15f * powf(2.0f * planet.radius / mn.distance, 1.5f);
             mn.tilt = (Rand() - 0.5f) * 0.4f;
-            mn.radius = planet.radius * (0.12f + 0.16f * Rand());
             mn.kind = kMoonKinds[std::min(2, (int)(Rand() * 3))];
             const PlanetKind& mk = kPlanetKinds[mn.kind];
             int pal = std::min(mk.palettes - 1, (int)(Rand() * mk.palettes));
@@ -1133,10 +1169,11 @@ struct Flight {
         return true;
     }
 
-    // The opening scene: docked at a great space station circling an
-    // Earth-like world. Laid out round the station first, its axis pointing
-    // straight out from the Earth's centre, then seen from the camera, far
-    // back from it and looking at the Earth.
+    // The opening scene: docked at a great space station at the L1 point
+    // between an Earth-like world and its Moon, where their pulls balance.
+    // Laid out round the station first, its axis pointing straight out from
+    // the Earth's centre towards the Moon, then seen from the camera, far off
+    // to one side with the Earth and the Moon both in view.
     void StartDocked()
     {
         phase = Docked;
@@ -1170,7 +1207,7 @@ struct Flight {
         planet.radius = kEarthRadius;
         planet.x = 0;
         planet.y = 0;
-        planet.z = -kStationOrbit;
+        planet.z = -kMoonDistance * kLagrange;
         float* a0 = planet.axis[0];
         float* a1 = planet.axis[1];
         float* a2 = planet.axis[2];
@@ -1196,14 +1233,17 @@ struct Flight {
         planet.rings = false;
         planet.wary = false;
         planet.orbitRadius = planet.radius * kLowOrbit;
+        planet.lap = kOrbitTime;
         planet.age = 10;
-        // Its moon.
+        // Its Moon, straight on beyond the station: the angle round the
+        // Earth's equator and the tilt from it that point along the
+        // station's axis. The station keeps pace with it, so it stays put.
         planet.moons = 1;
         auto& mn = planet.moon[0];
-        mn.distance = planet.radius * 6.0f;
-        mn.angle = 2.2f;
-        mn.speed = 0.004f;
-        mn.tilt = 0.1f;
+        mn.distance = kMoonDistance;
+        mn.angle = atan2f(hypotf(a1[2], a2[2]), a0[2]);
+        mn.speed = 0;
+        mn.tilt = atan2f(a1[2], a2[2]);
         mn.radius = planet.radius * 0.27f;
         mn.kind = 8;
         const float grey[3][3] = {{0.4f, 0.39f, 0.37f}, {0.62f, 0.6f, 0.57f}, {0.25f, 0.24f, 0.23f}};
@@ -1230,13 +1270,15 @@ struct Flight {
         shipDocked = 1;
         wide = 1;
 
-        // Now as the camera sees it: far back from the station, looking at the
-        // Earth's centre (see Update, Docked).
-        float view[3] = {kDockedView[0], kDockedView[1], kDockedView[2]};
+        // Now as the camera sees it: far off to the side, looking between the
+        // Earth and the Moon (see Update, Docked).
+        float view[3] = {kDockedWide[0], kDockedWide[1], kDockedWide[2]};
         Normalize(view);
         float cam[3] = {view[0] * kDockedFrom, view[1] * kDockedFrom, view[2] * kDockedFrom};
+        float first[3];
+        DockedLook(cam, first);
         float yaw, pitch;
-        Aim(planet.x - cam[0], planet.y - cam[1], planet.z - cam[2], yaw, pitch);
+        Aim(first[0], first[1], first[2], yaw, pitch);
         const Rotation look(yaw, pitch);
         auto place = [&](float& x, float& y, float& z) {
             x -= cam[0];
@@ -1255,6 +1297,21 @@ struct Flight {
         turn(sun.side);
         turn(shipFwd);
         turn(shipUp);
+    }
+
+    // Which way the camera first looks, from cam: midway between the Earth
+    // and its Moon.
+    void DockedLook(const float* cam, float* look) const
+    {
+        float earth[3] = {planet.x - cam[0], planet.y - cam[1], planet.z - cam[2]}, moon[3];
+        const auto& mn = planet.moon[0];
+        float c = cosf(mn.angle), s = sinf(mn.angle), ct = cosf(mn.tilt), st = sinf(mn.tilt);
+        for (int k = 0; k < 3; k++)
+            moon[k] = earth[k] + mn.distance * (planet.axis[0][k] * c + (planet.axis[2][k] * ct + planet.axis[1][k] * st) * s);
+        Normalize(earth);
+        Normalize(moon);
+        for (int k = 0; k < 3; k++) look[k] = earth[k] + moon[k];
+        Normalize(look);
     }
 
     // While the camera closes in on the station the stars, which are much
@@ -1286,22 +1343,28 @@ struct Flight {
             speed = CruiseSpeed();
             break;
         case Docked: {
-            // Held fast at the station. The camera closes in from far out
-            // along a line fixed to the station, turning from the Earth's
-            // centre to the hub as it comes, until the wheel fills the screen.
+            // Held fast at the station. The camera closes in from far off to
+            // the side, swinging round to the docking side as it comes and
+            // turning from the Earth and Moon to the hub, until the wheel
+            // fills the screen.
             speed = 0;
             float u = std::clamp((phaseTime - 2.0f) / (phaseLength - 4.0f), 0.0f, 1.0f);
             float e = u * u * (3 - 2 * u);
             float d = kDockedFrom * powf(kDockedTo / kDockedFrom, e);
-            float view[3] = {kDockedView[0], kDockedView[1], kDockedView[2]};
+            float wideView[3] = {kDockedWide[0], kDockedWide[1], kDockedWide[2]};
+            float nearView[3] = {kDockedView[0], kDockedView[1], kDockedView[2]};
+            Normalize(wideView);
+            Normalize(nearView);
+            float view[3], cam[3], first[3], hub[3], look[3];
+            for (int i = 0; i < 3; i++) view[i] = wideView[i] + (nearView[i] - wideView[i]) * e;
             Normalize(view);
-            float cam[3], look[3];
-            const float st[3] = {station.x, station.y, station.z}, earth[3] = {planet.x, planet.y, planet.z};
-            for (int i = 0; i < 3; i++) {
+            const float st[3] = {station.x, station.y, station.z};
+            for (int i = 0; i < 3; i++)
                 cam[i] = st[i] + (station.axis[0][i] * view[0] + station.axis[1][i] * view[1] + station.axis[2][i] * view[2]) * d;
-                float hub = st[i] * 0.75f + shipPos[i] * 0.25f;
-                look[i] = earth[i] + (hub - earth[i]) * e - cam[i];
-            }
+            DockedLook(cam, first);
+            for (int i = 0; i < 3; i++) hub[i] = st[i] * 0.75f + shipPos[i] * 0.25f - cam[i];
+            Normalize(hub);
+            for (int i = 0; i < 3; i++) look[i] = first[i] + (hub[i] - first[i]) * e;
             float yaw, pitch;
             Aim(look[0], look[1], look[2], yaw, pitch);
             Rotation(yaw, pitch).Apply(cam[0], cam[1], cam[2]);
@@ -1358,9 +1421,13 @@ struct Flight {
                     phase = Depart;
                     phaseTime = 0;
                     wide = 0;
-                    velX = -shipFwd[0] * 0.3f;
-                    velY = -shipFwd[1] * 0.3f;
-                    velZ = -shipFwd[2] * 0.3f;
+                    // Heading out past the Moon, not straight at it.
+                    float out[3];
+                    for (int i = 0; i < 3; i++) out[i] = -shipFwd[i] + station.axis[0][i] * 1.3f;
+                    Normalize(out);
+                    velX = out[0] * 0.3f;
+                    velY = out[1] * 0.3f;
+                    velZ = out[2] * 0.3f;
                     leavingStation = true;
                 }
             }
@@ -1403,7 +1470,7 @@ struct Flight {
             if ((phaseTime > 2.0f && fabsf(dist - arrive) < 0.4f && speed < 0.5f) || phaseTime > 15.0f) {
                 phase = Orbit;
                 phaseTime = 0;
-                phaseLength = kOrbitTime * kOrbits;
+                phaseLength = planet.lap * kOrbits;
                 if (planet.wary) {
                     buoys.on = true;
                     buoys.escorting = true;
@@ -1435,8 +1502,8 @@ struct Flight {
             Cross(orbitAxis, toPlanet, along);
             Normalize(along);
             float u = std::min(phaseTime / 3.0f, 1.0f);
-            float omega = 6.2831853f / kOrbitTime * u * u * (3 - 2 * u);
-            const float height = planet.radius * kOverhead;
+            float omega = 6.2831853f / planet.lap * u * u * (3 - 2 * u);
+            const float height = std::min(planet.radius, kOrbitScale) * kOverhead;
             float in = std::clamp((dist - (planet.orbitRadius + height)) * 0.5f, -2.0f, 2.0f);
             velX = along[0] * omega * dist + toPlanet[0] * in;
             velY = along[1] * omega * dist + toPlanet[1] * in;
@@ -2130,6 +2197,12 @@ static void DrawBody(Scene& sc, const Body& w)
     glUniform1f(glGetUniformLocation(p, "uFade"), u * u * (3 - 2 * u));
     glUniform1i(glGetUniformLocation(p, "uOctaves"), fl.wide > 0.2f ? 10 : 7);
     glUniform1i(glGetUniformLocation(p, "uCivilized"), w.civilized ? 1 : 0);
+    // Drawn round unless it fills much of the view, as a planet does when the
+    // ship flies low over it.
+    const float dist = sqrtf(w.pos[0] * w.pos[0] + w.pos[1] * w.pos[1] + w.pos[2] * w.pos[2]);
+    const float size = asinf(std::min(1.0f, w.radius / std::max(dist, 1e-6f)));
+    const float k = std::clamp((size - 0.35f) / 0.25f, 0.0f, 1.0f);
+    glUniform1f(glGetUniformLocation(p, "uStraighten"), 1.0f - k * k * (3 - 2 * k));
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     DrawFullscreen();
     glBlendFunc(GL_ONE, GL_ONE);
