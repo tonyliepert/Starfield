@@ -22,17 +22,16 @@ enum ShipMaterial { kHull = 0, kExhaust = 1, kWindows = 3, kDark = 4, kTrail = 5
                     kPodRing = 10,    // pod ring i (0 at the front) is kPodRing + i
                     kStrutLight = 20,    // strut tail light i (0 innermost) is kStrutLight + i
                     kBuoyLight = 30, kBuoyGrid = 31, kBuoyHull = 32,
-                    kStationWindows = 33, kNavGreen = 34, kDockLight = 35, kSolarPanel = 36, kStationHull = 37 };
+                    kStationWindows = 33, kNavGreen = 34, kDockLight = 35, kSolarPanel = 36, kStationHull = 37,
+                    kTether = 38, kElevatorNav = 39 };
 static const int kStrutLights = 6;
 static const int kPodRings = 5;
 
 static const wchar_t* kRegistry = L"FSS-908";   // lettered across the top of the saucer
-static const float kShipScale = 0.62f;                    // model units to space units
 static const float kShipOverhead = 0.16f;                 // seen from overhead, its size for each unit away
 static const float kPodX = 0.32f, kPodY = 0.17f;          // where the engine pods are, model units
 static const float kPodR = 0.045f;                        // their radius
 static const float kPodBack = -0.85f;                     // where their exhausts are
-static const float kShipTilt = 0.3f;                      // tipped back towards the camera, so it looks down on it
 
 static const char* kShipVS = R"(#version 130
 in vec3 aPos;
@@ -70,8 +69,10 @@ in float vMat;
 uniform vec3 uLightDir;   // towards the light
 uniform vec3 uLight;      // its colour and strength
 uniform float uEngine;    // how hard the engines are working
+uniform float uPower;     // 1 with the main engines lit, 0 with them dark
 uniform float uTime;
 uniform sampler2D uLetters; // the registry, white on black
+uniform vec4 uOccluder;   // a sphere that hides what is behind it (centre, radius; radius 0 for none)
 
 // Thin dark lines between hull plates.
 float hash1(vec3 p) {
@@ -92,6 +93,12 @@ float panels(vec3 m) {
 }
 
 void main() {
+    if (uOccluder.w > 0.0) {
+        float dist = length(vPos);
+        float b = dot(vPos / dist, uOccluder.xyz);
+        float h2 = dot(uOccluder.xyz, uOccluder.xyz) - b * b, r2 = uOccluder.w * uOccluder.w;
+        if (h2 < r2 && b - sqrt(r2 - h2) < dist) discard;
+    }
     vec3 n = normalize(vNormal);
     vec3 v = normalize(-vPos);
     if (dot(n, v) < 0.0) n = -n;
@@ -101,7 +108,7 @@ void main() {
         // and across it (-1..1) this is, and whether it is the steady, faint
         // one from the spine. It adds light; it covers nothing.
         float along = vNormal.x, across = vNormal.y;
-        float power = vNormal.z > 0.5 ? 0.22 : 0.15 + 0.75 * uEngine;
+        float power = vNormal.z > 0.5 ? 0.22 : (0.15 + 0.75 * uEngine) * uPower;
         float flicker = 0.75 + 0.25 * sin(uTime * 37.0 - along * 40.0) * sin(uTime * 23.0 + along * 17.0);
         float core = exp(-across * across * 6.0), halo = exp(-across * across * 1.5) * 0.35;
         vec3 c = mix(vec3(0.75, 0.9, 1.0), vec3(0.3, 0.45, 1.0), along);
@@ -113,7 +120,8 @@ void main() {
     vec3 base = vec3(0.86, 0.87, 0.9);
     float shine = 1.0;
     if (mat == 1) {
-        glow = vec3(0.55, 0.78, 1.0) * (1.0 + 3.0 * uEngine);
+        glow = vec3(0.55, 0.78, 1.0) * (1.0 + 3.0 * uEngine) * uPower;
+        base = mix(vec3(0.1, 0.1, 0.12), base, uPower);  // a dark nozzle when the engines are off
     } else if (mat == 30) {
         // A buoy's red warning light: a sharp flash twice a second.
         glow = vec3(0.9, 0.02, 0.0) * (0.4 + 10.0 * exp(-fract(uTime * 2.0) * 9.0));
@@ -154,6 +162,19 @@ void main() {
         // against it.
         base = vec3(0.42, 0.43, 0.46);
         shine = 0.7;
+    } else if (mat == 38) {
+        // A space elevator's tether: dark, with lights running up it.
+        float run = fract(vModel.z * 0.25 - uTime * 0.6);
+        glow = vec3(0.5, 0.75, 1.0) * (0.2 + 2.5 * smoothstep(0.88, 1.0, run));
+        base = vec3(0.3, 0.3, 0.33);
+        shine = 0.5;
+    } else if (mat == 39) {
+        // A space elevator's navigation light, red to port and green to
+        // starboard: a short bright flash once a second.
+        float since = fract(uTime);
+        vec3 c = vModel.x < 0.0 ? vec3(0.9, 0.02, 0.0) : vec3(0.05, 0.9, 0.25);
+        glow = c * (0.15 + 8.0 * exp(-since * 7.0));
+        base = c * 0.3;
     } else if (mat == 36) {
         // Solar panels: deep blue cells in a fine silver grid.
         vec2 g = abs(fract(vec2(vModel.x, vModel.z) * 4.0) - 0.5);
@@ -174,7 +195,7 @@ void main() {
         float ring = float(mat - 10);
         float since = fract(uTime * 0.5) * 32.0 - ring;  // a run every 2 seconds, a sixteenth of a second per ring
         float flash = since >= 0.0 ? exp(-since * 2.5) : 0.0;
-        glow = vec3(0.35, 0.7, 1.0) * (0.12 + flash * (3.5 + 3.5 * uEngine));
+        glow = vec3(0.35, 0.7, 1.0) * (0.12 + flash * (3.5 + 3.5 * uEngine)) * uPower;
         base *= 0.3;
     } else if (mat == 6) {
         // The beacon on top of the saucer and the tail lights: a short bright
@@ -598,14 +619,14 @@ static void StationRod(const float* p0, const float* p1, float r, int mat)
     }
 }
 
-// The space station: an original design. A single great wheel, some twenty
+// The space station: an original design. A single great wheel, some ten
 // times the ship's length across, turns slowly on six spokes about a hub
 // that stays still, so ships can dock at it. The wheel's outer face is
 // banded with lit windows, with red and green navigation lights round it;
 // the hub has a glowing docking collar on its front face, and an antenna
 // and red beacon behind. In its own units (space units) the wheel lies in
 // the x-y plane, its axis along z, the docking side towards +z.
-static const float kWheelRadius = 9.0f, kWheelTube = 0.85f;
+static const float kWheelRadius = 4.5f, kWheelTube = 0.55f;
 static std::vector<ShipVertex> g_hubMesh, g_wheelMesh;
 
 static void BuildStation()
@@ -615,8 +636,8 @@ static void BuildStation()
     // The hub: a drum along the axis, with a collar on its docking face.
     g_meshOut = &g_hubMesh;
     {
-        const float drum[][2] = {{0.0f, 1.9f}, {1.2f, 1.85f}, {1.45f, 1.6f}, {1.45f, 0.6f}, {1.45f, -0.6f},
-                                 {1.45f, -1.6f}, {1.2f, -1.85f}, {0.0f, -1.9f}};
+        const float drum[][2] = {{0.0f, 0.95f}, {0.6f, 0.92f}, {0.72f, 0.8f}, {0.72f, 0.3f}, {0.72f, -0.3f},
+                                 {0.72f, -0.8f}, {0.6f, -0.92f}, {0.0f, -0.95f}};
         const int mats[] = {kStationHull, kStationHull, kStationHull, kStationWindows, kStationHull, kStationHull, kStationHull};
         // Lathed about y; turned to lie along z below.
         size_t start = g_meshOut->size();
@@ -630,10 +651,10 @@ static void BuildStation()
             vx.n[2] = ny;
         }
     }
-    StationTube(0.0f, 0.0f, 1.9f, kHubPort - 0.05f, 0.42f, kStationHull);
-    StationTube(0.0f, 0.0f, kHubPort - 0.05f, kHubPort, 0.5f, kDockLight);
+    StationTube(0.0f, 0.0f, 0.95f, kHubPort - 0.05f, 0.3f, kStationHull);
+    StationTube(0.0f, 0.0f, kHubPort - 0.05f, kHubPort, 0.36f, kDockLight);
     {
-        const float m0[3] = {0, 0, -1.9f}, m1[3] = {0, 0, -4.2f};
+        const float m0[3] = {0, 0, -0.95f}, m1[3] = {0, 0, -2.6f};
         StationRod(m0, m1, 0.05f, kStationHull);
         const float beacon[][2] = {{0.0f, 0.12f}, {0.09f, 0.08f}, {0.12f, 0.0f}, {0.09f, -0.08f}, {0.0f, -0.12f}};
         const int bm[] = {kBeacon, kBeacon, kBeacon, kBeacon};
@@ -642,7 +663,7 @@ static void BuildStation()
             lp[i][0] = beacon[i][0];
             lp[i][1] = beacon[i][1];
         }
-        ShipLathe(lp, bm, 5, -4.3f, 12);
+        ShipLathe(lp, bm, 5, -2.7f, 12);
     }
 
     // The wheel: its rim, a tube bent round the axis, and six spokes.
@@ -675,8 +696,8 @@ static void BuildStation()
     }
     for (int k = 0; k < 6; k++) {
         float a = 6.2831853f * k / 6;
-        const float p0[3] = {cosf(a) * 1.4f, sinf(a) * 1.4f, 0}, p1[3] = {cosf(a) * (kWheelRadius - 0.6f), sinf(a) * (kWheelRadius - 0.6f), 0};
-        StationRod(p0, p1, 0.22f, kStationHull);
+        const float p0[3] = {cosf(a) * 0.65f, sinf(a) * 0.65f, 0}, p1[3] = {cosf(a) * (kWheelRadius - 0.6f), sinf(a) * (kWheelRadius - 0.6f), 0};
+        StationRod(p0, p1, 0.15f, kStationHull);
     }
     // Navigation lights round the rim: red on one side of the wheel, green on the other.
     const float nav[][2] = {{0.0f, 0.12f}, {0.09f, 0.08f}, {0.12f, 0.0f}, {0.09f, -0.08f}, {0.0f, -0.12f}};
@@ -694,12 +715,99 @@ static void BuildStation()
     g_meshOut = &g_shipMesh;
 }
 
+// A space elevator's station: an original design. A drum ringed with lit
+// windows threaded on the tether, a docking collar on one side, solar
+// wings to either side, and a counterweight on the tether above. Its own
+// units: the tether along z, up away from the planet; the collar towards +y.
+// (The tether down to the surface is drawn separately, as its length
+// depends on the planet.) A climber, a smaller drum, rides the tether.
+static std::vector<ShipVertex> g_elevatorMesh, g_climberMesh;
+
+// A drum about z, from a profile of (radius, z) points, each span with its
+// own material.
+static void ElevatorDrum(const float (*prof)[2], const int* mats, int count, int sides, float y0 = 0.0f)
+{
+    size_t start = g_meshOut->size();
+    ShipLathe(prof, mats, count, 0.0f, sides);  // lathed about y, then turned to lie along z
+    for (size_t i = start; i < g_meshOut->size(); i++) {
+        ShipVertex& vx = (*g_meshOut)[i];
+        float y = vx.p[1], z = vx.p[2], ny = vx.n[1], nz = vx.n[2];
+        vx.p[1] = y0 - z;
+        vx.p[2] = y;
+        vx.n[1] = -nz;
+        vx.n[2] = ny;
+    }
+}
+
+static void BuildElevator()
+{
+    if (!g_elevatorMesh.empty()) return;
+    g_meshOut = &g_elevatorMesh;
+    {
+        const float drum[][2] = {{0.0f, 1.0f}, {0.75f, 0.96f}, {1.0f, 0.7f}, {1.0f, 0.25f}, {1.0f, -0.25f},
+                                 {1.0f, -0.7f}, {0.75f, -0.96f}, {0.0f, -1.0f}};
+        const int mats[] = {kStationHull, kStationHull, kStationHull, kStationWindows, kStationHull, kStationHull, kStationHull};
+        ElevatorDrum(drum, mats, 8, 36);
+    }
+    // The docking pad, on an arm out from the drum, facing up away from the
+    // planet, with a glowing rim: a ship settles onto it on the bottom of
+    // its saucer.
+    {
+        const float a[3] = {0, 0.9f, 0}, b[3] = {0, kElevatorPort - 0.4f, 0};
+        StationRod(a, b, 0.14f, kStationHull);
+        const float t = kElevatorPadTop;
+        const float pad[][2] = {{0.0f, t}, {0.55f, t}, {0.62f, t - 0.04f}, {0.62f, -0.08f}, {0.35f, -0.16f}, {0.0f, -0.16f}};
+        const int mats[] = {kStationHull, kDockLight, kStationHull, kStationHull, kStationHull};
+        ElevatorDrum(pad, mats, 6, 28, kElevatorPort);
+    }
+    // Solar wings on struts, with a navigation light at each tip: red on
+    // one side, green on the other.
+    const float nav[][2] = {{0.0f, 0.1f}, {0.07f, 0.07f}, {0.1f, 0.0f}, {0.07f, -0.07f}, {0.0f, -0.1f}};
+    for (int side = -1; side <= 1; side += 2) {
+        const float x0 = side * 1.25f, x1 = side * 4.3f, t = 0.03f, w = 0.55f;
+        const float wing[8][3] = {{x0, -t, -w}, {x1, -t, -w}, {x1, t, -w}, {x0, t, -w},
+                                  {x0, -t, w}, {x1, -t, w}, {x1, t, w}, {x0, t, w}};
+        ShipBlock(wing, kSolarPanel);
+        const float a[3] = {side * 0.95f, 0, 0}, b[3] = {side * 1.3f, 0, 0};
+        StationRod(a, b, 0.08f, kStationHull);
+        // Small, and flashing once a second (red or green by the side it is on).
+        const float small[][2] = {{0.0f, 0.04f}, {0.028f, 0.028f}, {0.04f, 0.0f}, {0.028f, -0.028f}, {0.0f, -0.04f}};
+        const int mats[] = {kElevatorNav, kElevatorNav, kElevatorNav, kElevatorNav};
+        ShipLathe(small, mats, 5, 0.0f, 10, side * 4.33f);
+    }
+    // The tether above, to the counterweight, and a red beacon on top of it.
+    {
+        const float a[3] = {0, 0, 0.9f}, b[3] = {0, 0, 5.6f};
+        StationRod(a, b, 0.06f, kTether);
+        const float s = 0.3f, z0 = 5.6f, z1 = 6.6f;
+        const float block[8][3] = {{-s, -s, z0}, {s, -s, z0}, {s, s, z0}, {-s, s, z0},
+                                   {-s, -s, z1}, {s, -s, z1}, {s, s, z1}, {-s, s, z1}};
+        ShipBlock(block, kStationHull);
+        const int bm[] = {kBeacon, kBeacon, kBeacon, kBeacon};
+        float lp[5][2];
+        for (int i = 0; i < 5; i++) {
+            lp[i][0] = nav[i][0] * 1.2f;
+            lp[i][1] = nav[i][1] * 1.2f;
+        }
+        ShipLathe(lp, bm, 5, z1 + 0.1f, 12);
+    }
+    // The climber.
+    g_meshOut = &g_climberMesh;
+    {
+        const float drum[][2] = {{0.06f, 0.4f}, {0.3f, 0.36f}, {0.36f, 0.2f}, {0.36f, -0.2f}, {0.3f, -0.36f}, {0.06f, -0.4f}};
+        const int mats[] = {kStationHull, kStationHull, kStationWindows, kStationHull, kStationHull};
+        ElevatorDrum(drum, mats, 6, 16);
+    }
+    g_meshOut = &g_shipMesh;
+}
+
 static void InitShip(Scene& sc)
 {
     sc.shipLetters = MakeLetters();
     BuildShip();
     BuildBuoy();
     BuildStation();
+    BuildElevator();
     int k = sc.W * 2 <= 4096 && sc.H * 2 <= 4096 ? 2 : 1;
     sc.ship = MakeTarget(sc.W * k, sc.H * k, GL_RGBA16F, false);
     GLuint rb = 0;
@@ -717,38 +825,11 @@ static void DrawShip(Scene& sc)
 {
     const Flight& fl = g_flight;
 
-    // Its axes. Flying free it points the way it flies, upright, tipped back
-    // so the camera above and behind sees its back, and leans into turns.
+    // Its axes, which turn smoothly (see Flight::ShipAim), and its lean into
+    // turns.
     const float free = 1.0f - fl.shipOrbiting;
-    const float tilt = kShipTilt * free * (1.0f - fl.shipDocked);  // level while docked
-    float fwd[3] = {fl.shipFwd[0], fl.shipFwd[1] + tilt, fl.shipFwd[2]};
-    float up[3] = {fl.shipUp[0], fl.shipUp[1], fl.shipUp[2]}, right[3];
-    // In orbit its top faces straight away from the planet's centre and its
-    // bow points along its path round the planet.
-    if (fl.planet.on && fl.shipOrbiting > 0.0f) {
-        // Measured where the ship really is in its orbit, rather than at the
-        // spot ahead of the camera it is drawn when the camera is with it.
-        float out[3] = {-fl.planet.x, -fl.planet.y, -fl.planet.z};
-        float vel[3] = {fl.velX, fl.velY, fl.velZ};
-        if (fl.phase == Flight::Orbit)
-            for (int i = 0; i < 3; i++) {
-                out[i] = fl.shipRadial[i];
-                vel[i] = fl.shipTangent[i];
-            }
-        Flight::Normalize(out);
-        float radial = vel[0] * out[0] + vel[1] * out[1] + vel[2] * out[2];
-        float along[3] = {vel[0] - out[0] * radial, vel[1] - out[1] * radial, vel[2] - out[2] * radial};
-        if (along[0] * along[0] + along[1] * along[1] + along[2] * along[2] > 1e-8f) {
-            Flight::Normalize(along);
-            Flight::Normalize(fwd);
-            const float w = fl.shipOrbiting;
-            for (int i = 0; i < 3; i++) {
-                fwd[i] += (along[i] - fwd[i]) * w;
-                up[i] += (out[i] - up[i]) * w;
-            }
-        }
-    }
-    Flight::Normalize(fwd);
+    float fwd[3] = {fl.drawFwd[0], fl.drawFwd[1], fl.drawFwd[2]};
+    float up[3] = {fl.drawUp[0], fl.drawUp[1], fl.drawUp[2]}, right[3];
     Flight::Cross(up, fwd, right);
     Flight::Normalize(right);
     Flight::Cross(fwd, right, up);
@@ -759,21 +840,20 @@ static void DrawShip(Scene& sc)
         r2[i] = right[i] * cb + up[i] * sb;
         u2[i] = up[i] * cb - right[i] * sb;
     }
-    // A gentle drift about its place.
+    // A gentle drift about its place. In orbit the ship turns with the view
+    // (see uRoll); its place is turned the other way first, so it stays at
+    // the same spot on the screen.
     float t = (float)fl.t;
-    float at[3] = {kShipAt[0] + 0.02f * sinf(t * 0.43f), kShipAt[1] + 0.012f * sinf(t * 0.71f + 1.0f), kShipAt[2]};
-    // In orbit the ship turns with the view (see uRoll); turn its place the
-    // other way first, so it stays at the same spot on the screen.
-    const float viewRoll = fl.roll * fl.shipOrbiting, vc = cosf(-viewRoll), vs = sinf(-viewRoll);
-    const float ax = at[0], ay = at[1];
-    at[0] = ax * vc - ay * vs;
-    at[1] = ax * vs + ay * vc;
+    float at[3];
+    fl.ChaseSpot(at);
+    const float viewRoll = fl.roll * fl.shipOrbiting;
     // With the camera overhead in orbit, the ship is where it really is,
     // straight below the camera.
     for (int i = 0; i < 3; i++) at[i] += (fl.shipPos[i] - at[i]) * fl.wide;
     const float below = sqrtf(fl.shipPos[0] * fl.shipPos[0] + fl.shipPos[1] * fl.shipPos[1] + fl.shipPos[2] * fl.shipPos[2]);
-    const float distantScale = fl.phase == Flight::Orbit ? kShipOverhead * below : kShipScale;
-    const float scale = kShipScale + (distantScale - kShipScale) * fl.wide;
+    const float chaseScale = kShipScale * fl.shipShrink;
+    const float distantScale = fl.phase == Flight::Orbit ? kShipOverhead * below : chaseScale;
+    const float scale = chaseScale + (distantScale - chaseScale) * fl.wide;
 
     // Lit by the star it has been captured by, or else dimly, by deep space
     // (worked out in Flight::Update).
@@ -802,6 +882,7 @@ static void DrawShip(Scene& sc)
     glUniform3f(glGetUniformLocation(p, "uLightDir"), key[0], key[1], key[2]);
     glUniform3f(glGetUniformLocation(p, "uLight"), light[0], light[1], light[2]);
     glUniform1f(glGetUniformLocation(p, "uEngine"), std::min(1.0f, 0.15f + 0.85f * fl.warp + fl.flash * 3.0f));
+    glUniform1f(glGetUniformLocation(p, "uPower"), fl.engines);
     glUniform1f(glGetUniformLocation(p, "uTime"), t);
     BindTexture(1, sc.shipLetters);
     glActiveTexture(GL_TEXTURE0);
@@ -843,6 +924,51 @@ static void DrawShip(Scene& sc)
         glUniform1f(glGetUniformLocation(p, "uScale"), scale);
     }
 
+    // A space elevator, if the planet has one: its station, the tether down
+    // to the surface with a climber on it, and the counterweight above. The
+    // planet hides whatever of it is behind it.
+    if (fl.planet.on && fl.planet.elevator) {
+        const auto& pl = fl.planet;
+        float st[3], berth[3], over[3], hold[3], across[3];
+        fl.ElevatorPoints(st, berth, over, hold);
+        const float* up = pl.elevatorUp;
+        const float* port = pl.elevatorPort;
+        Flight::Cross(port, up, across);
+        glUniform3f(glGetUniformLocation(p, "uRight"), across[0], across[1], across[2]);
+        glUniform3f(glGetUniformLocation(p, "uUp"), port[0], port[1], port[2]);
+        glUniform3f(glGetUniformLocation(p, "uFwd"), up[0], up[1], up[2]);
+        glUniform3f(glGetUniformLocation(p, "uAt"), st[0], st[1], st[2]);
+        glUniform1f(glGetUniformLocation(p, "uScale"), kElevatorScale);
+        glUniform1f(glGetUniformLocation(p, "uRoll"), fl.roll);
+        glUniform4f(glGetUniformLocation(p, "uOccluder"), pl.x, pl.y, pl.z, pl.radius);
+        auto draw = [&](const std::vector<ShipVertex>& mesh) {
+            const ShipVertex* mv = mesh.data();
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), mv->p);
+            glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), mv->n);
+            glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), &mv->m);
+            glDrawArrays(GL_TRIANGLES, 0, (GLsizei)mesh.size());
+        };
+        draw(g_elevatorMesh);
+        // The tether, from a little into the ground up into the station.
+        const float ground = -pl.radius * (kElevatorHeight + 0.02f) / kElevatorScale;
+        static std::vector<ShipVertex> tether;  // kept, so its memory is reused from frame to frame
+        tether.clear();
+        g_meshOut = &tether;
+        const float a[3] = {0, 0, ground}, b[3] = {0, 0, -0.9f};
+        StationRod(a, b, 0.06f, kTether);
+        g_meshOut = &g_shipMesh;
+        draw(tether);
+        // The climber, slowly rising and falling between the ground and the
+        // station.
+        const float z = ground * (0.5f + 0.42f * cosf(t * 0.04f));
+        glUniform3f(glGetUniformLocation(p, "uAt"), st[0] + up[0] * z * kElevatorScale, st[1] + up[1] * z * kElevatorScale,
+                    st[2] + up[2] * z * kElevatorScale);
+        draw(g_climberMesh);
+        glUniform4f(glGetUniformLocation(p, "uOccluder"), 0, 0, 0, 0);
+        glUniform1f(glGetUniformLocation(p, "uRoll"), viewRoll);
+        glUniform1f(glGetUniformLocation(p, "uScale"), scale);
+    }
+
     // Guide buoys: flying in from ahead to flank the ship, spinning, then
     // left behind where they were when it jumps.
     if (fl.buoys.on) {
@@ -880,7 +1006,8 @@ static void DrawShip(Scene& sc)
     // positions are worked out here, seen from the camera, so the ship's
     // own placement is switched off while they are drawn.
     const float engine = std::min(1.0f, 0.15f + 0.85f * fl.warp + fl.flash * 3.0f);
-    std::vector<ShipVertex> trail;
+    static std::vector<ShipVertex> trail;  // kept, so its memory is reused from frame to frame
+    trail.clear();
     // A trail streaming back from m (model units): length and widths in space
     // units; steady trails keep the same faint glow whatever the engines do.
     auto addTrail = [&](const float* m, float length, float widthStart, float widthEnd, bool steady) {

@@ -486,11 +486,16 @@ private:
     void Play()
     {
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        // Composing and decoding take a few seconds; done in the background
+        // at low priority so they never hold up the pictures. Playing then
+        // runs at high priority so the sound never breaks up.
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
         Loop cruise, orbit;
         ComposeOrbit(orbit);
         if (quit) return;
         if (!LoadTrack((ProgramFolder() + kTrackFile).c_str(), kTrackLoop, kTrackEnd, cruise)) ComposeCruise(cruise);
         if (quit) return;
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
 
         WAVEFORMATEX fmt = {};
         fmt.wFormatTag = WAVE_FORMAT_PCM;
