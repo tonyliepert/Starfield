@@ -708,7 +708,7 @@ static const float kReach       = 20.0f;    // how close a star must pass to pul
 static const float kSwing       = 0.8f;     // seconds over which a star's pull swings the ship round
 static const float kMaxTurn     = 0.3f;     // fastest the ship turns, radians per second
 static const float kCapture     = 5.0f;     // a star passing closer than this captures the ship
-static const float kCaptureRest = 30.0f;    // seconds after an orbit before the ship can be captured again
+static const float kCaptureRest = 15.0f;    // seconds after an orbit before the ship can be captured again
 static const float kShipAt[3]  = {0.0f, -0.48f, 1.6f};  // where the ship flies, from the camera behind it
 static const float kWideTime    = 8.0f;    // seconds for the camera to rise above the ship in orbit, or come back down
 static const float kLowOrbit    = 1.05f;   // the ship's orbit, in planet radii from its centre
@@ -731,7 +731,8 @@ static const float kDockedWide[3] = {1.0f, 0.3f, 0.15f};   // the way the camera
 static const float kDockedView[3] = {0.35f, 0.25f, 1.0f};  // and when it has closed in, in the station's axes
 static const float kArriveAt    = 2.2f;    // how far above the planet's surface the ship stops before descending
 static const float kOrbitTime   = 30.0f;    // seconds for one lap of the planet (longer round a huge one)
-static const int   kOrbits      = 2;        // laps before the ship flies on
+static const int   kOrbits      = 2;        // laps of an inhabited world before the ship flies on (one of an empty one)
+static const float kBuoyDelay   = 10.0f;    // seconds into an orbit, once the ship has settled, before a wary world's buoys arrive
 static const float kElevatorHeight = 0.5f;  // a space elevator's station, above its world's surface, in planet radii
 static const float kElevatorScale  = 0.04f; // the station's model units to space units
 static const float kElevatorShrink = 0.12f; // visiting it, the ship is drawn this much smaller and the camera that much
@@ -1873,12 +1874,8 @@ struct Flight {
                 phase = Orbit;
                 enginesOff = true;  // it coasts round, its main engines shut down
                 phaseTime = 0;
-                phaseLength = planet.lap * kOrbits;
-                if (planet.wary) {
-                    buoys.on = true;
-                    buoys.escorting = true;
-                    buoys.time = 0;
-                }
+                const bool inhabited = planet.kind == 0 || planet.kind == 5 || planet.kind == 7;
+                phaseLength = planet.lap * (inhabited ? kOrbits : 1);
                 // Circle round in the plane that holds the star, so that
                 // partway round the star passes behind the planet.
                 float toPlanet[3] = {planet.x, planet.y, planet.z};
@@ -1905,6 +1902,13 @@ struct Flight {
             float along[3];
             Cross(orbitAxis, toPlanet, along);
             Normalize(along);
+            // A wary world sends its buoys up once the ship has settled into
+            // its orbit.
+            if (planet.wary && !buoys.on && phaseTime > kBuoyDelay) {
+                buoys.on = true;
+                buoys.escorting = true;
+                buoys.time = 0;
+            }
             float u = std::min(phaseTime / 3.0f, 1.0f);
             float omega = 6.2831853f / planet.lap * u * u * (3 - 2 * u);
             const float height = std::min(planet.radius, kOrbitScale) * kOverhead;
@@ -2268,6 +2272,7 @@ struct Scene {
     Target ship;          // the ship, drawn larger than the screen and shrunk to smooth its edges
     GLuint progShip = 0, progShipDown = 0;
     GLuint shipLetters = 0;  // the ship's registry, lettered on its saucer
+    GLuint dockedLetters = 0;  // and the registry of the ship docked at a space elevator
 
     std::vector<Star> field;
     float feed = 0;       // stars owed to the edge the ship is turning towards

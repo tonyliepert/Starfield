@@ -28,6 +28,7 @@ static const int kStrutLights = 6;
 static const int kPodRings = 5;
 
 static const wchar_t* kRegistry = L"FSS-908";   // lettered across the top of the saucer
+static const wchar_t* kDockedRegistry = L"FSS-117";  // the ship docked for good at a space elevator
 static const float kShipOverhead = 0.16f;                 // seen from overhead, its size for each unit away
 static const float kPodX = 0.32f, kPodY = 0.17f;          // where the engine pods are, model units
 static const float kPodR = 0.045f;                        // their radius
@@ -523,8 +524,8 @@ static void BuildBuoy()
     g_meshOut = &g_shipMesh;
 }
 
-// Draws the registry into a texture, white on black, filling it edge to edge.
-static GLuint MakeLetters()
+// Draws a registry into a texture, white on black, filling it edge to edge.
+static GLuint MakeLetters(const wchar_t* registry)
 {
     const int w = 1024, hgt = 160;
     BITMAPINFO bi = {};
@@ -546,12 +547,12 @@ static GLuint MakeLetters()
     SetBkMode(dc, TRANSPARENT);
     // Squeeze the text to fit the width; centre it.
     SIZE size;
-    GetTextExtentPoint32W(dc, kRegistry, (int)wcslen(kRegistry), &size);
+    GetTextExtentPoint32W(dc, registry, (int)wcslen(registry), &size);
     XFORM squeeze = {std::min(1.0f, w * 0.96f / size.cx), 0, 0, 1, 0, 0};
     SetGraphicsMode(dc, GM_ADVANCED);
     SetWorldTransform(dc, &squeeze);
     RECT box = {0, -(int)(hgt * 0.22f), (LONG)(w / squeeze.eM11), hgt};
-    DrawTextW(dc, kRegistry, -1, &box, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+    DrawTextW(dc, registry, -1, &box, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
     GdiFlush();
 
     std::vector<uint8_t> rgba((size_t)w * hgt * 4);
@@ -749,16 +750,16 @@ static void BuildElevator()
         const int mats[] = {kStationHull, kStationHull, kStationHull, kStationWindows, kStationHull, kStationHull, kStationHull};
         ElevatorDrum(drum, mats, 8, 36);
     }
-    // The docking pad, on an arm out from the drum, facing up away from the
-    // planet, with a glowing rim: a ship settles onto it on the bottom of
-    // its saucer.
-    {
-        const float a[3] = {0, 0.9f, 0}, b[3] = {0, kElevatorPort - 0.4f, 0};
-        StationRod(a, b, 0.14f, kStationHull);
+    // Two docking pads, on arms out from either side of the drum, facing up
+    // away from the planet, with glowing rims: a ship settles onto one on
+    // the bottom of its saucer.
+    for (float side : {1.0f, -1.0f}) {
+        const float a[3] = {0, side * 0.9f, 0}, b[3] = {0, side * (kElevatorPort - 0.24f), 0};
+        StationRod(a, b, 0.12f, kStationHull);
         const float t = kElevatorPadTop;
-        const float pad[][2] = {{0.0f, t}, {0.55f, t}, {0.62f, t - 0.04f}, {0.62f, -0.08f}, {0.35f, -0.16f}, {0.0f, -0.16f}};
+        const float pad[][2] = {{0.0f, t}, {0.31f, t}, {0.36f, t - 0.04f}, {0.36f, -0.08f}, {0.2f, -0.16f}, {0.0f, -0.16f}};
         const int mats[] = {kStationHull, kDockLight, kStationHull, kStationHull, kStationHull};
-        ElevatorDrum(pad, mats, 6, 28, kElevatorPort);
+        ElevatorDrum(pad, mats, 6, 28, side * kElevatorPort);
     }
     // Solar wings on struts, with a navigation light at each tip: red on
     // one side, green on the other.
@@ -794,7 +795,7 @@ static void BuildElevator()
     // The climber.
     g_meshOut = &g_climberMesh;
     {
-        const float drum[][2] = {{0.06f, 0.4f}, {0.3f, 0.36f}, {0.36f, 0.2f}, {0.36f, -0.2f}, {0.3f, -0.36f}, {0.06f, -0.4f}};
+        const float drum[][2] = {{0.06f, 0.14f}, {0.1f, 0.12f}, {0.12f, 0.07f}, {0.12f, -0.07f}, {0.1f, -0.12f}, {0.06f, -0.14f}};
         const int mats[] = {kStationHull, kStationHull, kStationWindows, kStationHull, kStationHull};
         ElevatorDrum(drum, mats, 6, 16);
     }
@@ -803,7 +804,8 @@ static void BuildElevator()
 
 static void InitShip(Scene& sc)
 {
-    sc.shipLetters = MakeLetters();
+    sc.shipLetters = MakeLetters(kRegistry);
+    sc.dockedLetters = MakeLetters(kDockedRegistry);
     BuildShip();
     BuildBuoy();
     BuildStation();
@@ -964,6 +966,28 @@ static void DrawShip(Scene& sc)
         glUniform3f(glGetUniformLocation(p, "uAt"), st[0] + up[0] * z * kElevatorScale, st[1] + up[1] * z * kElevatorScale,
                     st[2] + up[2] * z * kElevatorScale);
         draw(g_climberMesh);
+        // Another ship, docked for good on the far pad, facing the station,
+        // its engines dark.
+        {
+            const float size = kShipScale * kElevatorShrink;
+            float pos[3], right[3];
+            for (int i = 0; i < 3; i++)
+                pos[i] = st[i] + (-port[i] * kElevatorPort + up[i] * kElevatorPadTop) * kElevatorScale - up[i] * kSaucerBottom[0] * size -
+                         port[i] * kSaucerBottom[1] * size;
+            Flight::Cross(up, port, right);
+            glUniform3f(glGetUniformLocation(p, "uRight"), right[0], right[1], right[2]);
+            glUniform3f(glGetUniformLocation(p, "uUp"), up[0], up[1], up[2]);
+            glUniform3f(glGetUniformLocation(p, "uFwd"), port[0], port[1], port[2]);
+            glUniform3f(glGetUniformLocation(p, "uAt"), pos[0], pos[1], pos[2]);
+            glUniform1f(glGetUniformLocation(p, "uScale"), size);
+            glUniform1f(glGetUniformLocation(p, "uPower"), 0.0f);
+            BindTexture(1, sc.dockedLetters);  // its own registry
+            glActiveTexture(GL_TEXTURE0);
+            draw(g_shipMesh);
+            BindTexture(1, sc.shipLetters);
+            glActiveTexture(GL_TEXTURE0);
+            glUniform1f(glGetUniformLocation(p, "uPower"), fl.engines);
+        }
         glUniform4f(glGetUniformLocation(p, "uOccluder"), 0, 0, 0, 0);
         glUniform1f(glGetUniformLocation(p, "uRoll"), viewRoll);
         glUniform1f(glGetUniformLocation(p, "uScale"), scale);

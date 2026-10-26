@@ -21,17 +21,19 @@ A Windows screensaver: a starship flying through deep space at warp.
   its next jump to warp) and descends into a low orbit around one of ten
   kinds of procedural planet, with up to three moons (molten ones round a
   lava world), while the camera follows above and behind it. Planets vary
-  in size, and some are huge. After two laps the ship jumps back to warp.
+  in size, and some are huge. After two laps of an inhabited world, or one of an
+  empty one, the ship jumps back to warp.
 - Brown dwarfs' planets are the most often inhabited, then yellow stars';
   red giants' and neutron stars' never are. Inhabited worlds have fields,
   roads and towns by day and city lights by night. Half of them have a
   space elevator: a tether rising from the surface, with a climber riding
   it, to a station with solar wings and a counterweight above. The ship
-  slows to the station, its main engines going dark, and settles onto its
-  docking pad on the bottom of its saucer, while the camera drifts round to
-  look down the tether; then it lifts off and heads away. Of the rest, half
-  are wary of visitors, and send two spinning guide buoys to fly alongside
-  the ship and escort it away.
+  slows to the station, its main engines going dark, and settles onto one
+  of its two docking pads on the bottom of its saucer (another ship,
+  FSS-117, is docked on the other), while the camera drifts round to look down the
+  tether; then it lifts off and heads away. Of the rest, half are wary of
+  visitors: once the ship has settled into orbit they send up two spinning
+  guide buoys to fly alongside it and escort it away.
 - Original music, synthesized at startup, crossfades between a cruise theme
   and a calmer orbit theme. If `geoffharvey-starfleet-command-150605.mp3` (or
   whatever `kTrackFile` in `src/music.h` names) is beside the program, it
