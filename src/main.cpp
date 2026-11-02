@@ -10,6 +10,8 @@
 // giant with a neutron star pulling a stream of gas off it, and the
 // planet any of ten kinds, each a little different every time, with up to
 // three moons, and lights, fields and roads on its land if it is habitable.
+// Now and then a Borg cube circles an inhabited world: the ship opens fire,
+// chases it away from the planet, destroys it and comes back to orbit.
 //
 // Command line (standard screensaver protocol):
 //   /s          run full screen
@@ -21,6 +23,9 @@
 //   /x <name> [seconds]
 //               fly for that many seconds, then render three frames to
 //               <name>_0.bmp .. <name>_2.bmp and exit
+//   /b          run in a window, with a Borg cube at every planet the ship
+//               visits; also the default when the program is named
+//               StarfieldBorg.exe
 // In a window, pressing S saves what is on the screen as a JPEG in the
 // Downloads folder.
 
@@ -264,6 +269,7 @@ uniform vec2 uRes;
 uniform vec2 uCenter;
 uniform float uWarp;
 uniform float uFlash;
+uniform float uBlast;   // the whole screen flashing as a Borg cube blows up
 void main() {
     vec2 uv = gl_FragCoord.xy / uRes;
     // A planet in the stars layer hides the nebulae behind it.
@@ -275,6 +281,7 @@ void main() {
     float r2 = dot(d, d);
     col += vec3(0.25, 0.35, 0.6) * exp(-r2 * 40.0) * uWarp * 0.12;
     col += vec3(0.75, 0.85, 1.0) * (exp(-r2 * 30.0) * 2.0 + exp(-r2 * 5.0) * 0.4) * uFlash;
+    col += vec3(0.7, 0.82, 1.0) * uBlast * 2.2;
 
     col = 1.0 - exp(-col * 1.8);  // tone map
     vec2 v = uv - 0.5;
@@ -743,6 +750,33 @@ static const float kElevatorHold   = 0.35f; // where the ship waits before creep
 static const float kElevatorSettle = 0.05f; // how far above the pad it creeps in before settling onto it
 static const float kSaucerBottom[2] = {-0.089f, 0.2f};  // the bottom of the ship's saucer, model units (up, forward)
 static const float kMooredTime     = 16.0f; // seconds docked at the elevator
+static const float kShipLength     = 1.42f; // the ship's length, bow to exhausts, model units
+static bool g_forceBorg = false;           // a Borg cube at every planet (see /b)
+static const float kBorgChance  = 0.3f;    // how often an inhabited world without an elevator has a Borg cube circling it
+static const float kBorgShrink  = 0.05f;   // near a cube the ship is drawn this small, for each unit of the planet's size
+                                           // (no bigger than kOrbitScale), so it is in scale with the cube (see kElevatorShrink)
+static const float kBorgEdge    = 5.0f;    // the cube's edge, in ship lengths
+static const float kBorgOrbit   = 2.0f;    // how far above the ship's orbit the cube circles, in kOverhead heights
+static const float kBorgLead    = 0.85f;    // how far round the planet ahead of the ship it keeps, radians
+static const float kBorgSighted = 5.0f;    // seconds into the orbit, the cube in view, before the ship opens fire
+static const float kBorgFlee    = 3.0f;    // seconds under fire before the cube breaks orbit and flees
+static const float kFleeSpeed   = 1.0f;    // the cube's speed fleeing, per second, in the planet's size (as kBorgShrink)
+static const float kPursueRange = 7.0f;    // how far behind it the ship keeps, giving chase, in the cube's edges
+static const float kBarrage     = 18.0f;   // seconds the ship keeps firing before the last torpedo
+static const float kTorpedoEvery = 0.35f;  // seconds between photon torpedoes, from tubes to port and starboard by turns
+static const float kTorpedoFlight = 1.0f;  // seconds a torpedo takes to reach the cube
+static const float kPhaserEvery = 2.2f;    // seconds between phaser bursts, from either side of the saucer by turns
+static const float kPhaserLength = 1.5f;   // how long each burst rakes across the cube
+static const float kBlastAt = kBarrage + kTorpedoFlight;  // the last torpedo strikes and the cube blows up
+static const float kBlastTime = 5.0f;      // seconds watching it burn before heading back to the planet
+static const int kBorgDamage = 64;         // torpedo hits that leave the cube burning
+
+// A number from 0 to 1 that is always the same for the same k and salt.
+static float Hash01(int k, int salt)
+{
+    const float x = sinf(k * 12.9898f + salt * 78.233f) * 43758.5453f;
+    return x - floorf(x);
+}
 
 // The stars that can capture the ship.
 struct StarKind {
@@ -959,7 +993,7 @@ static void Aim(float x, float y, float z, float& yaw, float& pitch)
 }
 
 struct Flight {
-    enum Phase { Cruise, Coast, Jump, Approach, Orbit, Depart, Docked, Undock, Rejoin, Berth, Moored };
+    enum Phase { Cruise, Coast, Jump, Approach, Orbit, Depart, Docked, Undock, Rejoin, Berth, Moored, Pursue };
     Phase phase = Docked;
     float phaseTime = 0, phaseLength = kDockedTime;  // starts docked; see StartDocked
     double t = 0;
@@ -967,6 +1001,7 @@ struct Flight {
     float velX = 0, velY = 0, velZ = kCoastSpeed;  // the ship's velocity
     float warp = 0;       // 0 coasting .. 1 at full speed
     float flash = 0;      // light of a jump
+    float blast = 0;      // the whole screen's flash as a Borg cube blows up
     float roll = 0, rollRate = 0;
     float zoom = 0;       // how far the nebulae have swelled
     float headingX = 0, headingY = 0;  // offset of the vanishing point, in screen heights
@@ -1044,6 +1079,8 @@ struct Flight {
     float drawFwd[3] = {0, 0, 1};        // the way the ship is drawn pointing, and its deck facing, turning
     float drawUp[3] = {0, 1, 0};         // smoothly towards ShipAim
     bool drawReady = false;              // set once they have been put where ShipAim says
+    float slewRate = 0;                  // how fast the drawn ship is turning towards ShipAim, radians per second
+    float orbitTurn = 0;                 // how far round the planet the ship has gone this step, in orbit
     float stepDt = 0;                    // the time step of this Update, for smoothing the steering
     float shipShrink = 1;                // see kElevatorShrink
     float moorFrom[6], moorTo[6];        // moored, the camera's place and the way it looks, at first and at last,
@@ -1066,6 +1103,22 @@ struct Flight {
         float released;                  // when the ship left them behind
         float pos[2][3];                 // where they are, seen from the camera
     } buoys;
+    // A Borg cube circling an inhabited world: the ship opens fire on it,
+    // chases it away from the planet and destroys it.
+    struct {
+        bool on = false;
+        int stage = 0;                   // 0 circling the planet, 1 giving chase, 2 blown up
+        float axis[3];                   // circling: the axis it goes round the planet about
+        float offset[3];                 // circling: from the planet's centre to it
+        float pos[3];                    // where it is, seen from the camera
+        float vel[3];                    // giving chase: its velocity
+        float frame[3][3];               // its own axes
+        float edge;                      // the length of its edges
+        float fireTime;                  // since the ship opened fire on it (below 0 before)
+        float blastTime;                 // since it blew up
+        int damaged;                     // torpedo hits burning on it
+        float damage[kBorgDamage][3];    // where, in its own axes (see BorgStrike)
+    } borg;
 
     std::mt19937 rng{(unsigned)GetTickCount()};
 
@@ -1082,6 +1135,15 @@ struct Flight {
         out[0] = a[1] * b[2] - a[2] * b[1];
         out[1] = a[2] * b[0] - a[0] * b[2];
         out[2] = a[0] * b[1] - a[1] * b[0];
+    }
+
+    // Turns v about unit vector axis by angle a.
+    static void RotateAbout(float* v, const float* axis, float a)
+    {
+        float ax[3], d = axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2];
+        Cross(axis, v, ax);
+        const float c = cosf(a), s = sinf(a);
+        for (int i = 0; i < 3; i++) v[i] = v[i] * c + ax[i] * s + axis[i] * d * (1 - c);
     }
 
     // A colour a little different each time.
@@ -1140,6 +1202,7 @@ struct Flight {
         static const int kHabitable[] = {0, 5, 7};
         static const int kWild[] = {1, 2, 3, 4, 6, 8, 9};
         int kind = Rand() < sk.inhabited ? kHabitable[std::min(2, (int)(Rand() * 3))] : kWild[std::min(6, (int)(Rand() * 7))];
+        if (g_forceBorg) kind = kHabitable[std::min(2, (int)(Rand() * 3))];  // somewhere for a Borg cube
         // A brown dwarf is too cool to keep a world molten.
         const bool brown = sun.kind == kBrownDwarf || sun.kind == kBinaryDwarf;
         while (kind == 4 && brown) kind = kWild[std::min(6, (int)(Rand() * 7))];
@@ -1200,7 +1263,7 @@ struct Flight {
         // line of sight on the side towards the star, tipped a little
         // towards the ship, so it stands out against the sky; the docking
         // pad faces the ship.
-        planet.elevator = (kind == 0 || kind == 5 || kind == 7) && Rand() < 0.5f;
+        planet.elevator = (kind == 0 || kind == 5 || kind == 7) && Rand() < 0.5f && !g_forceBorg;
         if (planet.elevator) {
             planet.rings = false;
             planet.wary = false;
@@ -1225,6 +1288,34 @@ struct Flight {
         // doesn't rush past too fast.
         planet.lap = kOrbitTime * sqrtf(planet.radius / scale);
         planet.age = 0;
+        // Now and then a Borg cube circles an inhabited world without an
+        // elevator, well above the ship's orbit, the way the ship will go
+        // round, keeping ahead of where it will arrive. Such a world has no
+        // rings for the cube to cut through, and sends no buoys.
+        borg.on = (kind == 0 || kind == 5 || kind == 7) && !planet.elevator && (g_forceBorg || Rand() < kBorgChance);
+        if (borg.on) {
+            planet.rings = false;
+            planet.wary = false;
+            float toPlanet[3] = {planet.x, planet.y, planet.z}, star[3] = {s.x - planet.x, s.y - planet.y, s.z - planet.z};
+            Normalize(toPlanet);
+            Cross(star, toPlanet, borg.axis);  // see Update, Approach
+            if (borg.axis[0] * borg.axis[0] + borg.axis[1] * borg.axis[1] + borg.axis[2] * borg.axis[2] < 1e-8f)
+                Cross(toPlanet, planet.axis[0], borg.axis);
+            Normalize(borg.axis);
+            const float height = scale * kOverhead;
+            for (int i = 0; i < 3; i++) borg.offset[i] = -toPlanet[i] * (planet.orbitRadius + kBorgOrbit * height);
+            RotateAbout(borg.offset, borg.axis, kBorgLead);
+            const float centre[3] = {planet.x, planet.y, planet.z};
+            for (int i = 0; i < 3; i++) borg.pos[i] = centre[i] + borg.offset[i];
+            RandomFrame(borg.frame[0], borg.frame[1]);
+            Cross(borg.frame[0], borg.frame[1], borg.frame[2]);
+            borg.edge = kBorgEdge * kShipLength * kShipScale * BorgShrink();
+            borg.stage = 0;
+            borg.fireTime = -1;
+            borg.blastTime = 0;
+            borg.damaged = 0;
+            for (float& v : borg.vel) v = 0;
+        }
 
         // Moons: up to three, the nearer ones quicker, all clear of any rings
         // and well clear of the star. A huge world's moons are no bigger and
@@ -1446,26 +1537,6 @@ struct Flight {
         for (int i = 0; i < 3; i++) v[i] = (c[i] / d * cosf(a) + side[i] * sinf(a)) * sp;
     }
 
-    // Turns unit vector v towards unit vector to by the fraction k of the
-    // angle between them, but no more than most (radians), about axis when
-    // they point opposite ways.
-    static void TurnToward(float* v, const float* to, const float* axis, float k, float most)
-    {
-        float c = std::clamp(v[0] * to[0] + v[1] * to[1] + v[2] * to[2], -1.0f, 1.0f);
-        float a = std::min(acosf(c) * k, most);
-        if (a < 1e-6f) return;
-        float n[3];
-        Cross(v, to, n);
-        if (n[0] * n[0] + n[1] * n[1] + n[2] * n[2] < 1e-10f)
-            for (int i = 0; i < 3; i++) n[i] = axis[i];
-        Normalize(n);
-        float nv[3], d = n[0] * v[0] + n[1] * v[1] + n[2] * v[2];
-        Cross(n, v, nv);
-        const float ca = cosf(a), sa = sinf(a);
-        for (int i = 0; i < 3; i++) v[i] = v[i] * ca + nv[i] * sa + n[i] * d * (1 - ca);
-        Normalize(v);
-    }
-
     // Which way the ship should point and its deck face, seen from the
     // camera. Flying free it points the way it flies, upright, tipped back
     // so the camera above and behind sees its back. In orbit, and slowing to
@@ -1475,9 +1546,11 @@ struct Flight {
     void ShipAim(float* fwd, float* up) const
     {
         const float free = 1.0f - shipOrbiting;
-        const float tilt = kShipTilt * free * (1.0f - shipDocked);  // level while docked
+        float tilt = kShipTilt * free * (1.0f - shipDocked);  // level while docked
+        float screenUp[3];
+        ScreenUp(screenUp);
         for (int i = 0; i < 3; i++) {
-            fwd[i] = shipFwd[i] + (i == 1 ? tilt : 0.0f);
+            fwd[i] = shipFwd[i] + screenUp[i] * tilt;
             up[i] = shipUp[i];
         }
         if (planet.on && shipOrbiting > 0.0f) {
@@ -1502,7 +1575,10 @@ struct Flight {
             if (circling > 0.0f) {
                 Normalize(along);
                 Normalize(fwd);
-                const float w = shipOrbiting * circling;
+                // In orbit (or at an elevator) it makes for its orbiting
+                // attitude straight away, the drawn ship turning there
+                // steadily (see Update); leaving, it eases out of it.
+                const float w = (phase == Orbit || atElevator ? 1.0f : shipOrbiting) * circling;
                 for (int i = 0; i < 3; i++) {
                     fwd[i] += (along[i] - fwd[i]) * w;
                     up[i] += (out[i] - up[i]) * w;
@@ -1522,18 +1598,69 @@ struct Flight {
         for (int i = 0; i < 3; i++) up[i] = deck[i];
     }
 
+    // Straight up the screen, seen from the camera (before the view's roll).
+    void ScreenUp(float* out) const
+    {
+        out[0] = sinf(roll);
+        out[1] = cosf(roll);
+        out[2] = 0;
+    }
+
     // Where the ship is drawn while the camera rides with it, seen from the
-    // camera (before the view's roll): a little ahead and below, drifting
-    // gently about. See DrawShip.
+    // camera (before the view's roll): a little ahead and below on the
+    // screen, drifting gently about. See DrawShip.
     void ChaseSpot(float* out) const
     {
         const float tt = (float)t;
         const float x = (kShipAt[0] + 0.02f * sinf(tt * 0.43f)) * shipShrink;
         const float y = (kShipAt[1] + 0.012f * sinf(tt * 0.71f + 1.0f)) * shipShrink;
-        const float viewRoll = roll * shipOrbiting, c = cosf(-viewRoll), s = sinf(-viewRoll);
+        const float c = cosf(-roll), s = sinf(-roll);
         out[0] = x * c - y * s;
         out[1] = x * s + y * c;
         out[2] = kShipAt[2] * shipShrink;
+    }
+
+    // Turns the view towards a Borg cube, so it is seen a little above the
+    // ship, clear of it.
+    void WatchBorg()
+    {
+        const float d = sqrtf(borg.pos[0] * borg.pos[0] + borg.pos[1] * borg.pos[1] + borg.pos[2] * borg.pos[2]);
+        const float lift = d * 0.2f, x = borg.pos[0] - sinf(roll) * lift, y = borg.pos[1] - cosf(roll) * lift;
+        float yaw, pitch;
+        Aim(x, y, borg.pos[2], yaw, pitch);
+        Steer(yaw, pitch, 1.0f, 0.35f);
+    }
+
+    // How small the ship is drawn near a Borg cube (see kBorgShrink).
+    float BorgShrink() const { return kBorgShrink * std::min(planet.radius, kOrbitScale); }
+
+    // Where shot k strikes a Borg cube, in its own axes (its edges 1 long):
+    // here and there on the face turned towards the ship, sweep (-1..1)
+    // moving it across the face.
+    void BorgStrike(int k, float sweep, float* local) const
+    {
+        const float d = sqrtf(borg.pos[0] * borg.pos[0] + borg.pos[1] * borg.pos[1] + borg.pos[2] * borg.pos[2]) + 1e-6f;
+        int axis = 0;
+        float best = 0, side = 1;
+        for (int a = 0; a < 3; a++) {
+            const float* f = borg.frame[a];
+            const float towards = -(f[0] * borg.pos[0] + f[1] * borg.pos[1] + f[2] * borg.pos[2]) / d;
+            if (fabsf(towards) > best) {
+                best = fabsf(towards);
+                axis = a;
+                side = towards > 0 ? 1.0f : -1.0f;
+            }
+        }
+        local[axis] = side * 0.52f;
+        local[(axis + 1) % 3] = std::clamp((Hash01(k, 11) - 0.5f) * 0.7f + sweep * 0.35f, -0.45f, 0.45f);
+        local[(axis + 2) % 3] = (Hash01(k, 12) - 0.5f) * 0.7f;
+    }
+
+    // A point given in a Borg cube's own axes, seen from the camera.
+    void BorgPoint(const float* local, float* out) const
+    {
+        for (int i = 0; i < 3; i++)
+            out[i] = borg.pos[i] + (borg.frame[0][i] * local[0] + borg.frame[1][i] * local[1] + borg.frame[2][i] * local[2]) * borg.edge;
     }
 
     // A space elevator's station; where the ship lies docked at it, the
@@ -1575,10 +1702,12 @@ struct Flight {
     void Update(float dt)
     {
         stepDt = dt;
+        orbitTurn = 0;
         t += dt;
         phaseTime += dt;
         sinceOrbit += dt;
         flash *= expf(-dt * 3.0f);
+        blast *= expf(-dt * 1.8f);
         auto blend = [](float from, float to, float e) { return expf(logf(from) + (logf(to) - logf(from)) * e); };
         switch (phase) {
         case Cruise:
@@ -1887,6 +2016,13 @@ struct Flight {
                     orbitAxis[2] = 0;
                 }
                 Normalize(orbitAxis);
+                if (borg.on && borg.stage == 0) {
+                    // The way the cube goes round, beneath it (see Capture).
+                    Normalize(toPlanet);
+                    const float d = borg.axis[0] * toPlanet[0] + borg.axis[1] * toPlanet[1] + borg.axis[2] * toPlanet[2];
+                    for (int i = 0; i < 3; i++) orbitAxis[i] = -(borg.axis[i] - toPlanet[i] * d);
+                    Normalize(orbitAxis);
+                }
 
                 wide = 0;
                 wideRate = 0;
@@ -1911,6 +2047,7 @@ struct Flight {
             }
             float u = std::min(phaseTime / 3.0f, 1.0f);
             float omega = 6.2831853f / planet.lap * u * u * (3 - 2 * u);
+            orbitTurn = omega * dt;
             const float height = std::min(planet.radius, kOrbitScale) * kOverhead;
             float in = std::clamp((dist - (planet.orbitRadius + height)) * 0.5f, -2.0f, 2.0f) * u * u * (3 - 2 * u);
             velX = along[0] * omega * dist + toPlanet[0] * in;
@@ -1930,7 +2067,9 @@ struct Flight {
             // The camera rises slowly above the ship, and near the end comes
             // back down, each time gathering speed gently and settling gently
             // (a critically damped spring), never starting with a jolt.
-            bool overhead = phaseTime < phaseLength - kWideTime;
+            // (With a Borg cube about, it stays down behind the ship, watching it.)
+            const bool cube = borg.on && borg.stage == 0;
+            bool overhead = phaseTime < phaseLength - kWideTime && !cube;
             const float spring = 0.8f;
             wideRate += (((overhead ? 1.0f : 0.0f) - wide) * spring * spring - 2.0f * spring * wideRate) * dt;
             wide = std::clamp(wide + wideRate * dt, 0.0f, 1.0f);
@@ -1947,12 +2086,29 @@ struct Flight {
                     const float ahead = toPlanet[i] + (along[i] - toPlanet[i]) * round;
                     look[i] = ahead + (down[i] - ahead) * wide;
                 }
+                if (cube) {
+                    // Turned a little towards the cube, ahead above the
+                    // horizon, and down, so the planet's limb is in view.
+                    float to[3] = {borg.pos[0], borg.pos[1], borg.pos[2]};
+                    Normalize(to);
+                    for (int i = 0; i < 3; i++) look[i] += (to[i] * 0.35f + toPlanet[i] * 0.3f) * round;
+                }
             }
             float yaw, pitch;
             Aim(look[0], look[1], look[2], yaw, pitch);
             Steer(yaw, pitch, 2.0f, 0.35f);
             speed = omega * dist;
-            if (phaseTime > phaseLength) {
+            // Having the cube in view, the ship opens fire on it at once;
+            // soon it breaks orbit and flees, and the ship gives chase.
+            if (cube && borg.fireTime < 0 && phaseTime > kBorgSighted) borg.fireTime = 0;
+            if (cube && borg.fireTime > kBorgFlee) {
+                borg.stage = 1;
+                Cross(borg.axis, borg.offset, borg.vel);  // at the speed it was going round
+                for (float& v : borg.vel) v *= 6.2831853f / planet.lap;
+                phase = Pursue;
+                phaseTime = 0;
+                enginesOff = false;
+            } else if (phaseTime > phaseLength) {
                 // Fly on from where the orbit was going.
                 phase = Depart;
                 phaseTime = 0;
@@ -1966,6 +2122,31 @@ struct Flight {
                 velX = v[0];
                 velY = v[1];
                 velZ = v[2];
+            }
+            break;
+        }
+        case Pursue: {
+            // Chasing a fleeing Borg cube, keeping a little way behind it and
+            // firing all the while, until it blows up; then easing to a stop,
+            // to watch it burn, and heading back to the planet to look for
+            // survivors.
+            float want = 0;
+            if (borg.stage < 2) {
+                const float d = sqrtf(borg.pos[0] * borg.pos[0] + borg.pos[1] * borg.pos[1] + borg.pos[2] * borg.pos[2]);
+                const float fleeing = sqrtf(borg.vel[0] * borg.vel[0] + borg.vel[1] * borg.vel[1] + borg.vel[2] * borg.vel[2]);
+                want = std::clamp(fleeing + (d - kPursueRange * borg.edge) * 0.6f, 0.0f, 3.0f * fleeing + 0.5f);
+            }
+            // Speeding up and slowing down gently, and heading the way the
+            // camera looks.
+            const float k = std::min(1.0f, dt * 0.8f);
+            velX += (0.0f - velX) * k;
+            velY += (0.0f - velY) * k;
+            velZ += (want - velZ) * k;
+            speed = sqrtf(velX * velX + velY * velY + velZ * velZ);
+            WatchBorg();
+            if (borg.stage == 2 && borg.blastTime > kBlastTime) {
+                phase = Approach;
+                phaseTime = 0;
             }
             break;
         }
@@ -1998,12 +2179,23 @@ struct Flight {
         }
         }
         const bool steered = phase == Approach || phase == Orbit || phase == Depart || phase == Docked || phase == Undock ||
-                             phase == Rejoin || phase == Berth || phase == Moored;
+                             phase == Rejoin || phase == Berth || phase == Moored || phase == Pursue;
 
         warp = std::clamp((speed - kCoastSpeed) / (kMaxSpeed * 0.7f - kCoastSpeed), 0.0f, 1.0f);
         rollRate = 0.05f * sinf((float)t * 0.031f) + 0.025f * sinf((float)t * 0.017f + 2.0f);
         rollRate *= (1.0f - shipOrbiting) * (1.0f - shipDocked);
         roll += rollRate * dt;
+        {
+            // The ship holds still on the screen as the view wanders round,
+            // so is turned back the other way. (Rolled round to the planet in
+            // orbit, it turns with the view, see ShipAim.)
+            const float a = -rollRate * dt, c = cosf(a), s = sinf(a);
+            for (float* v : {shipFwd, shipUp, drawFwd, drawUp}) {
+                const float x = v[0] * c - v[1] * s, y = v[0] * s + v[1] * c;
+                v[0] = x;
+                v[1] = y;
+            }
+        }
         if (planet.on && shipOrbiting > 0.0f) {
             // Straight out from the planet should point up the screen; looking
             // down from overhead, the ship's way forward should.
@@ -2049,7 +2241,8 @@ struct Flight {
         // The star and planet move just as the field of stars does (see
         // MoveStars).
         Rotation rot(turnX, turnY);
-        if (phase == Depart) rot.Apply(velX, velY, velZ);  // keeps heading the same way as the ship turns
+        if (phase == Depart || phase == Pursue)
+            rot.Apply(velX, velY, velZ);  // keeps heading the same way as the ship turns
         if (sun.on) {
             rot.Apply(sun.x, sun.y, sun.z);
             sun.x -= velX * dt;
@@ -2119,6 +2312,79 @@ struct Flight {
             }
             if (!steered && away) planet.on = false;
         }
+        if (!planet.on) borg.on = false;
+        if (borg.on) {
+            rot.Apply(borg.axis[0], borg.axis[1], borg.axis[2]);
+            rot.Apply(borg.offset[0], borg.offset[1], borg.offset[2]);
+            rot.Apply(borg.vel[0], borg.vel[1], borg.vel[2]);
+            for (auto& a : borg.frame) rot.Apply(a[0], a[1], a[2]);
+            // Turning slowly about one of its axes.
+            float* f0 = borg.frame[0];
+            float* f2 = borg.frame[2];
+            const float w = dt * 0.03f, c = cosf(w), sn = sinf(w);
+            for (int i = 0; i < 3; i++) {
+                const float a = f0[i], b = f2[i];
+                f0[i] = a * c + b * sn;
+                f2[i] = b * c - a * sn;
+            }
+            if (borg.stage == 0) {
+                // Circling the planet, keeping a little ahead of the camera
+                // round it: quicker when it falls back, slower when it gets
+                // too far ahead.
+                const float* ax = borg.axis;
+                float cam[3] = {-planet.x, -planet.y, -planet.z}, off[3] = {borg.offset[0], borg.offset[1], borg.offset[2]};
+                const float dc = cam[0] * ax[0] + cam[1] * ax[1] + cam[2] * ax[2];
+                const float doff = off[0] * ax[0] + off[1] * ax[1] + off[2] * ax[2];
+                for (int i = 0; i < 3; i++) {
+                    cam[i] -= ax[i] * dc;
+                    off[i] -= ax[i] * doff;
+                }
+                float cr[3];
+                Cross(cam, off, cr);
+                const float lead = atan2f(cr[0] * ax[0] + cr[1] * ax[1] + cr[2] * ax[2],
+                                          cam[0] * off[0] + cam[1] * off[1] + cam[2] * off[2]);
+                const float omega = 6.2831853f / planet.lap * std::clamp(1.0f + (kBorgLead - lead) * 2.0f, 0.3f, 2.0f);
+                RotateAbout(borg.offset, ax, omega * dt);
+                borg.pos[0] = planet.x + borg.offset[0];
+                borg.pos[1] = planet.y + borg.offset[1];
+                borg.pos[2] = planet.z + borg.offset[2];
+            } else {
+                rot.Apply(borg.pos[0], borg.pos[1], borg.pos[2]);
+                if (borg.stage == 1) {
+                    // Fleeing, straight out from the planet.
+                    float away[3] = {borg.pos[0] - planet.x, borg.pos[1] - planet.y, borg.pos[2] - planet.z};
+                    Normalize(away);
+                    const float want = kFleeSpeed * std::min(planet.radius, kOrbitScale);
+                    const float k = std::min(1.0f, dt * 0.4f);
+                    for (int i = 0; i < 3; i++) {
+                        borg.vel[i] += (away[i] * want - borg.vel[i]) * k;
+                        borg.pos[i] += borg.vel[i] * dt;
+                    }
+                } else {
+                    borg.blastTime += dt;
+                    if (borg.blastTime > 10.0f) borg.on = false;  // its pieces scattered far and wide
+                }
+                borg.pos[0] -= velX * dt;
+                borg.pos[1] -= velY * dt;
+                borg.pos[2] -= velZ * dt;
+            }
+            if (borg.fireTime >= 0) {
+                // Under fire: each torpedo that strikes leaves it burning,
+                // and the last blows it up.
+                const float before = borg.fireTime;
+                borg.fireTime += dt;
+                for (int k = 0; k * kTorpedoEvery <= kBarrage; k++) {
+                    const float hit = k * kTorpedoEvery + kTorpedoFlight;
+                    if (hit > before && hit <= borg.fireTime && borg.damaged < kBorgDamage && borg.stage < 2)
+                        BorgStrike(k, 0.0f, borg.damage[borg.damaged++]);
+                }
+                if (borg.stage < 2 && borg.fireTime >= kBlastAt) {
+                    borg.stage = 2;
+                    borg.blastTime = 0;
+                    blast = 1;
+                }
+            }
+        }
 
         // The ship turns to point the way it is going, and leans into turns.
         rot.Apply(shipFwd[0], shipFwd[1], shipFwd[2]);
@@ -2142,12 +2408,31 @@ struct Flight {
             // Well away at warp, back to its usual size.
             shipShrink += (1.0f - shipShrink) * std::min(1.0f, dt * 0.5f);
         }
+        if (phase == Pursue) {
+            // Chasing a Borg cube, the ship points at it, firing; once it has
+            // blown up, at where it was.
+            float to[3] = {borg.pos[0], borg.pos[1], borg.pos[2]};
+            Normalize(to);
+            for (int i = 0; i < 3; i++) heading[i] = to[i];
+            sp = 1;
+        }
+        if (phase == Approach) {
+            // Coming to a planet, it faces it, even turning round to it from
+            // a standstill.
+            float to[3] = {planet.x, planet.y, planet.z};
+            Normalize(to);
+            for (int i = 0; i < 3; i++) heading[i] = to[i];
+            sp = 1;
+        }
         if (phase == Depart && leavingStation) {
             // Swinging round from the station, the ship turns with the view.
             heading[0] = heading[1] = 0;
             heading[2] = 1;
             sp = 1;
         }
+        // Near a Borg cube the ship is drawn smaller, and the camera closer,
+        // which looks no different, so that it is in scale with the cube.
+        if (borg.on && phase != Cruise) shipShrink += (BorgShrink() - shipShrink) * std::min(1.0f, dt);
         if (phase == Jump) leavingStation = false;
         // The main engines go dark while they are shut down.
         engines += ((enginesOff ? 0.0f : 1.0f) - engines) * std::min(1.0f, dt * 1.2f);
@@ -2166,7 +2451,8 @@ struct Flight {
         bool orbiting = planet.on && (phase == Orbit || atElevator);  // level on the way in, so it never dives
         shipOrbiting += ((orbiting ? 1.0f : 0.0f) - shipOrbiting) * std::min(1.0f, dt * 0.4f);
         rot.Apply(shipUp[0], shipUp[1], shipUp[2]);
-        float wantUp[3] = {0, 1, 0};
+        float wantUp[3];  // up the screen, flying free
+        ScreenUp(wantUp);
         if (planet.on) {
             float out[3] = {-planet.x, -planet.y, -planet.z};  // where the ship really is in its orbit
             if (phase == Orbit)
@@ -2193,18 +2479,46 @@ struct Flight {
                 }
                 drawReady = true;
             } else {
-                const float k = std::min(1.0f, dt * 1.2f), most = dt * 0.4f;  // never faster than about 23 degrees a second
-                TurnToward(drawFwd, aimFwd, drawUp, k, most);
-                // The deck, at right angles to the bow, turned about the bow.
-                float d = drawUp[0] * drawFwd[0] + drawUp[1] * drawFwd[1] + drawUp[2] * drawFwd[2];
+                // Going round the planet, it is carried round with its orbit,
+                // so turning into its orbiting attitude is a single steady
+                // turn, not one chasing a moving mark.
+                if (orbitTurn != 0.0f) {
+                    RotateAbout(drawFwd, orbitAxis, -orbitTurn);
+                    RotateAbout(drawUp, orbitAxis, -orbitTurn);
+                }
+                // The whole ship turned at once, about a single axis, the
+                // shortest way to where it should face: gathering speed
+                // gently, slowing as it gets there, and never faster than
+                // about 25 degrees a second. (Turning bow and deck each on
+                // its own would have it corkscrew round.)
+                float right[3], aimRight[3];
+                Cross(drawUp, drawFwd, right);
+                Cross(aimUp, aimFwd, aimRight);
+                const float* from[3] = {right, drawUp, drawFwd};
+                const float* to[3] = {aimRight, aimUp, aimFwd};
+                float m[3][3];  // the turn from where it faces to where it should: sum of to * from
+                for (int i = 0; i < 3; i++)
+                    for (int j = 0; j < 3; j++) m[i][j] = to[0][i] * from[0][j] + to[1][i] * from[1][j] + to[2][i] * from[2][j];
+                const float angle = acosf(std::clamp((m[0][0] + m[1][1] + m[2][2] - 1.0f) * 0.5f, -1.0f, 1.0f));
+                float axis[3] = {m[2][1] - m[1][2], m[0][2] - m[2][0], m[1][0] - m[0][1]};
+                const float len = sqrtf(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+                if (len < 1e-4f) {
+                    // Facing the opposite way (or already there): about the deck.
+                    for (int i = 0; i < 3; i++) axis[i] = drawUp[i];
+                } else {
+                    for (int i = 0; i < 3; i++) axis[i] /= len;
+                }
+                const float want = std::min(angle * 0.9f, 0.45f);
+                slewRate = want < slewRate ? want : std::min(want, slewRate + dt * 0.35f);
+                const float step = std::min(slewRate * dt, angle);
+                if (step > 1e-7f) {
+                    RotateAbout(drawFwd, axis, step);
+                    RotateAbout(drawUp, axis, step);
+                }
+                Normalize(drawFwd);
+                const float d = drawUp[0] * drawFwd[0] + drawUp[1] * drawFwd[1] + drawUp[2] * drawFwd[2];
                 for (int i = 0; i < 3; i++) drawUp[i] -= drawFwd[i] * d;
                 Normalize(drawUp);
-                d = aimUp[0] * drawFwd[0] + aimUp[1] * drawFwd[1] + aimUp[2] * drawFwd[2];
-                float deck[3] = {aimUp[0] - drawFwd[0] * d, aimUp[1] - drawFwd[1] * d, aimUp[2] - drawFwd[2] * d};
-                if (deck[0] * deck[0] + deck[1] * deck[1] + deck[2] * deck[2] > 1e-6f) {
-                    Normalize(deck);
-                    TurnToward(drawUp, deck, drawFwd, k, most);
-                }
             }
         }
 
@@ -2236,7 +2550,7 @@ struct Flight {
         }
 
         // Stars stop streaking once the ship has settled into orbit.
-        bool still = phase == Orbit || atElevator || (phase == Approach && speed < 2.0f);
+        bool still = phase == Orbit || atElevator || (phase == Approach && speed < 2.0f) || phase == Pursue;
         blur = std::clamp(blur + (still ? -dt : dt), 0.0f, 1.0f);
 
         // The view follows a change of course a little behind, so the point
@@ -2889,6 +3203,7 @@ static void Render(Scene& sc, const Target* out)
     glUniform2f(glGetUniformLocation(p, "uCenter"), cx, cy);
     glUniform1f(glGetUniformLocation(p, "uWarp"), fl.warp);
     glUniform1f(glGetUniformLocation(p, "uFlash"), fl.flash);
+    glUniform1f(glGetUniformLocation(p, "uBlast"), fl.blast);
     DrawFullscreen();
 }
 
@@ -3122,6 +3437,8 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR cmdLine, int)
     GetModuleFileNameA(nullptr, exe, MAX_PATH);
     size_t len = strlen(exe);
     if (!*c && len > 4 && _stricmp(exe + len - 4, ".exe") == 0) g_mode = Mode::Window;
+    // Named StarfieldBorg.exe: a Borg cube at every planet, to see one.
+    if (len >= 8 && _stricmp(exe + len - 8, "Borg.exe") == 0) g_forceBorg = true;
 
     if (*c == '/' || *c == '-') {
         char sw = (char)tolower(c[1]);
@@ -3131,6 +3448,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR cmdLine, int)
         case 's': g_mode = Mode::Saver; break;
         case 'p': g_mode = Mode::Preview; parent = (HWND)(uintptr_t)strtoull(arg, nullptr, 10); break;
         case 'w': g_mode = Mode::Window; break;
+        case 'b': g_mode = Mode::Window; g_forceBorg = true; break;
         case 'x': g_mode = Mode::Shot; shotPath = arg; break;
         default:  g_mode = Mode::Config; break;
         }

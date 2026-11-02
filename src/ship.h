@@ -23,7 +23,8 @@ enum ShipMaterial { kHull = 0, kExhaust = 1, kWindows = 3, kDark = 4, kTrail = 5
                     kStrutLight = 20,    // strut tail light i (0 innermost) is kStrutLight + i
                     kBuoyLight = 30, kBuoyGrid = 31, kBuoyHull = 32,
                     kStationWindows = 33, kNavGreen = 34, kDockLight = 35, kSolarPanel = 36, kStationHull = 37,
-                    kTether = 38, kElevatorNav = 39 };
+                    kTether = 38, kElevatorNav = 39,
+                    kBorgHull = 40, kPhaser = 41, kGlow = 42 };
 static const int kStrutLights = 6;
 static const int kPodRings = 5;
 
@@ -56,7 +57,7 @@ void main() {
     vMat = aMat;
     float c = cos(uRoll), s = sin(uRoll);
     vec2 q = vec2(p.x * c - p.y * s, p.x * s + p.y * c);
-    const float n = 0.05, f = 1000.0;
+    const float n = 0.01, f = 1000.0;
     gl_Position = vec4(q.x * uFocal.x + uShift.x * p.z, q.y * uFocal.y + uShift.y * p.z,
                        p.z * (f + n) / (f - n) - 2.0 * f * n / (f - n), p.z);
 }
@@ -115,6 +116,46 @@ void main() {
         vec3 c = mix(vec3(0.75, 0.9, 1.0), vec3(0.3, 0.45, 1.0), along);
         float fade = clamp(1.0 - along, 0.0, 1.0);
         gl_FragColor = vec4(c * (core + halo) * fade * fade * flicker * power, 0.0);
+        return;
+    }
+    if (mat == 41) {
+        // A phaser beam: vNormal carries how far along it (x) and across it
+        // (y, -1..1) this is, and how strong it is (z).
+        float across = vNormal.y;
+        float core = exp(-across * across * 10.0), halo = exp(-across * across * 1.5) * 0.35;
+        float flicker = 0.85 + 0.15 * sin(uTime * 61.0 - vNormal.x * 40.0);
+        vec3 c = mix(vec3(1.0, 0.42, 0.1), vec3(1.0, 0.92, 0.75), core);
+        gl_FragColor = vec4(c * (core * 2.5 + halo) * flicker * vNormal.z, 0.0);
+        return;
+    }
+    if (mat == 42) {
+        // Light from weapons and a Borg cube blowing up, on a square: vNormal
+        // carries where on it this is (xy, -1..1), what it is (the whole part
+        // of z) and how far through its life (the fraction).
+        vec2 q = vNormal.xy;
+        float d2 = dot(q, q), r = sqrt(d2);
+        int kind = int(floor(vNormal.z));
+        float age = fract(vNormal.z);
+        vec3 c;
+        if (kind == 0) {
+            // A photon torpedo: a fierce red-orange star with a white core.
+            float rays = exp(-abs(q.y) * 30.0) * exp(-abs(q.x) * 3.0) + exp(-abs(q.x) * 30.0) * exp(-abs(q.y) * 3.0);
+            c = vec3(1.0, 0.95, 0.9) * exp(-d2 * 40.0) * 4.0 + vec3(1.0, 0.3, 0.1) * (exp(-d2 * 6.0) * 1.2 + rays * 0.7);
+        } else if (kind == 1) {
+            // The fireball: blue-white at first, then orange, then dull red,
+            // churning, as it swells and fades.
+            vec3 hot = mix(vec3(0.8, 0.9, 1.0), vec3(1.0, 0.55, 0.2), smoothstep(0.0, 0.25, age));
+            hot = mix(hot, vec3(0.5, 0.12, 0.05), smoothstep(0.25, 1.0, age));
+            float churn = 0.7 + 0.3 * sin(atan(q.y, q.x) * 7.0 + r * 14.0 - age * 25.0) * sin(atan(q.y, q.x) * 3.0 - r * 9.0);
+            c = hot * (exp(-d2 * 3.0) * churn * 1.6 + exp(-d2 * 14.0) * 2.0) * (1.0 - age) * (1.0 - age);
+        } else if (kind == 2) {
+            // The shock wave: a thin blue-white ring.
+            c = vec3(0.7, 0.85, 1.0) * exp(-pow((r - 0.85) * 12.0, 2.0)) * 1.6 * (1.0 - age);
+        } else {
+            // A spark, or the flare of a hit.
+            c = vec3(1.0, 0.6, 0.25) * (exp(-d2 * 8.0) * 1.5 + exp(-d2 * 40.0) * 3.0) * (1.0 - age);
+        }
+        gl_FragColor = vec4(c * (1.0 - smoothstep(0.75, 1.0, r)), 0.0);
         return;
     }
     vec3 glow = vec3(0.0);
@@ -182,6 +223,17 @@ void main() {
         float frame = step(0.46, max(g.x, g.y));
         base = mix(vec3(0.04, 0.07, 0.2), vec3(0.6, 0.62, 0.66), frame);
         shine = 1.2;
+    } else if (mat == 40) {
+        // A Borg cube's hull: dark grey machinery, a maze of plates and
+        // conduits, with here and there a faint green light deep in it.
+        vec3 g = vModel * 36.0 + 0.5;
+        vec3 cell = floor(g), e = min(fract(g), 1.0 - fract(g));
+        float seam = min(min(e.x, e.y), e.z);
+        float h = hash1(cell + 7.0);
+        base = vec3(0.19, 0.2, 0.22) * (0.55 + 0.7 * h) * mix(0.45, 1.0, smoothstep(0.02, 0.08, seam));
+        float lit = step(0.985, hash1(cell * 1.7 + 3.0));
+        glow = vec3(0.1, 0.9, 0.3) * lit * (0.2 + 0.1 * sin(uTime * 3.0 + h * 40.0));
+        shine = 0.35;
     } else if (mat >= 20) {
         // The tail lights along each strut flash one after another from the
         // hull outwards, a sixteenth of a second each, once every 2 seconds.
@@ -213,7 +265,7 @@ void main() {
         base = vec3(0.4, 0.42, 0.46);
         shine = 0.6;
     }
-    base *= mix(0.82, 1.0, panels(vModel));
+    if (mat != 40) base *= mix(0.82, 1.0, panels(vModel));
     // The registry, in big dark letters arcing round the forward part of
     // the saucer, facing outwards: their feet towards the rim, reading left
     // to right from beyond the bow, looking in.
@@ -802,6 +854,92 @@ static void BuildElevator()
     g_meshOut = &g_shipMesh;
 }
 
+// A Borg cube: a dark box an edge long, its faces crowded with smaller
+// blocks and long conduits standing out from them, and a plain block for the
+// pieces it blows into. Its own units: centred, its edges along the axes.
+static std::vector<ShipVertex> g_borgMesh, g_chunkMesh;
+
+static void BuildBorg()
+{
+    if (!g_borgMesh.empty()) return;
+    g_meshOut = &g_chunkMesh;
+    const float h = 0.5f;
+    const float box[8][3] = {{-h, -h, -h}, {h, -h, -h}, {h, h, -h}, {-h, h, -h},
+                             {-h, -h, h},  {h, -h, h},  {h, h, h},  {-h, h, h}};
+    ShipBlock(box, kBorgHull);
+    g_meshOut = &g_borgMesh;
+    ShipBlock(box, kBorgHull);
+    uint32_t seed = 12345;
+    auto rnd = [&seed]() {
+        seed = seed * 1664525u + 1013904223u;
+        return (seed >> 8) * (1.0f / 16777216.0f);
+    };
+    for (int axis = 0; axis < 3; axis++)
+        for (float side : {-1.0f, 1.0f})
+            for (int i = 0; i < 110; i++) {
+                // Mostly blocks, some long thin conduits, a few great slabs.
+                float w = 0.02f + 0.1f * rnd(), l = 0.02f + 0.1f * rnd(), up = 0.004f + 0.03f * rnd();
+                const float pick = rnd();
+                if (pick < 0.25f) {
+                    w = 0.012f + 0.01f * rnd();
+                    l = 0.2f + 0.5f * rnd();
+                } else if (pick > 0.94f) {
+                    w = 0.18f + 0.12f * rnd();
+                    l = 0.18f + 0.12f * rnd();
+                    up = 0.008f + 0.008f * rnd();
+                }
+                if (rnd() < 0.5f) std::swap(w, l);
+                const float u0 = -h + w * 0.5f, v0 = -h + l * 0.5f;
+                const float u = u0 + (2.0f * -u0) * rnd(), v = v0 + (2.0f * -v0) * rnd();
+                float c[8][3];
+                const float us[4] = {u - w * 0.5f, u + w * 0.5f, u + w * 0.5f, u - w * 0.5f};
+                const float vs[4] = {v - l * 0.5f, v - l * 0.5f, v + l * 0.5f, v + l * 0.5f};
+                for (int k = 0; k < 8; k++) {
+                    const float depth = k < 4 ? h - 0.01f : h + up;  // sunk a little into the face
+                    c[k][axis] = side * depth;
+                    c[k][(axis + 1) % 3] = us[k % 4];
+                    c[k][(axis + 2) % 3] = vs[k % 4];
+                }
+                ShipBlock(c, kBorgHull);
+            }
+    g_meshOut = &g_shipMesh;
+}
+
+static void DrawMesh(GLuint p, const std::vector<ShipVertex>& mesh)
+{
+    const ShipVertex* mv = mesh.data();
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), mv->p);
+    glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), mv->n);
+    glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), &mv->m);
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)mesh.size());
+}
+
+// The pieces a Borg cube blows into.
+static const int kBorgChunks = 26;
+static const int kBorgSparks = 90;
+
+// Where piece k of a blown-up Borg cube is, which way it faces, and how big
+// it is: flung out from where the cube was, tumbling.
+static void BorgChunk(int k, float* pos, float* right, float* up, float* fwd, float& size)
+{
+    const auto& bg = g_flight.borg;
+    float dir[3];
+    for (int i = 0; i < 3; i++)
+        dir[i] = bg.frame[0][i] * (Hash01(k, 1) - 0.5f) + bg.frame[1][i] * (Hash01(k, 2) - 0.5f) + bg.frame[2][i] * (Hash01(k, 3) - 0.5f);
+    Flight::Normalize(dir);
+    const float t = bg.blastTime, out = bg.edge * (0.15f + (0.25f + 0.6f * Hash01(k, 4)) * t);
+    for (int i = 0; i < 3; i++) pos[i] = bg.pos[i] + dir[i] * out;
+    size = bg.edge * (0.05f + 0.12f * Hash01(k, 5));
+    const float a = t * (0.5f + 2.0f * Hash01(k, 6)) + k, b = t * (0.3f + 1.5f * Hash01(k, 7)) + k * 2.0f;
+    const float ca = cosf(a), sa = sinf(a), cb = cosf(b), sb = sinf(b);
+    for (int i = 0; i < 3; i++) {
+        right[i] = bg.frame[0][i] * ca + bg.frame[1][i] * sa;
+        const float u = bg.frame[1][i] * ca - bg.frame[0][i] * sa;
+        up[i] = u * cb + bg.frame[2][i] * sb;
+        fwd[i] = bg.frame[2][i] * cb - u * sb;
+    }
+}
+
 static void InitShip(Scene& sc)
 {
     sc.shipLetters = MakeLetters(kRegistry);
@@ -810,6 +948,7 @@ static void InitShip(Scene& sc)
     BuildBuoy();
     BuildStation();
     BuildElevator();
+    BuildBorg();
     int k = sc.W * 2 <= 4096 && sc.H * 2 <= 4096 ? 2 : 1;
     sc.ship = MakeTarget(sc.W * k, sc.H * k, GL_RGBA16F, false);
     GLuint rb = 0;
@@ -842,13 +981,13 @@ static void DrawShip(Scene& sc)
         r2[i] = right[i] * cb + up[i] * sb;
         u2[i] = up[i] * cb - right[i] * sb;
     }
-    // A gentle drift about its place. In orbit the ship turns with the view
-    // (see uRoll); its place is turned the other way first, so it stays at
-    // the same spot on the screen.
+    // A gentle drift about its place. Like everything else it is turned with
+    // the view's roll (see uRoll); its place is turned the other way first,
+    // so it stays at the same spot on the screen.
     float t = (float)fl.t;
     float at[3];
     fl.ChaseSpot(at);
-    const float viewRoll = fl.roll * fl.shipOrbiting;
+    const float viewRoll = fl.roll;
     // With the camera overhead in orbit, the ship is where it really is,
     // straight below the camera.
     for (int i = 0; i < 3; i++) at[i] += (fl.shipPos[i] - at[i]) * fl.wide;
@@ -1025,6 +1164,37 @@ static void DrawShip(Scene& sc)
         }
     }
 
+    // A Borg cube, circling its planet or giving chase, or the pieces it has
+    // blown into. It is not tied to the ship, so it turns with the view; the
+    // planet hides whatever of it is behind it.
+    const auto& bg = fl.borg;
+    if (bg.on) {
+        const auto& pl = fl.planet;
+        glUniform1f(glGetUniformLocation(p, "uRoll"), fl.roll);
+        glUniform4f(glGetUniformLocation(p, "uOccluder"), pl.x, pl.y, pl.z, pl.radius);
+        auto place = [&](const float* at, const float* r, const float* u, const float* f, float size) {
+            glUniform3f(glGetUniformLocation(p, "uRight"), r[0], r[1], r[2]);
+            glUniform3f(glGetUniformLocation(p, "uUp"), u[0], u[1], u[2]);
+            glUniform3f(glGetUniformLocation(p, "uFwd"), f[0], f[1], f[2]);
+            glUniform3f(glGetUniformLocation(p, "uAt"), at[0], at[1], at[2]);
+            glUniform1f(glGetUniformLocation(p, "uScale"), size);
+        };
+        if (bg.stage < 2) {
+            place(bg.pos, bg.frame[0], bg.frame[1], bg.frame[2], bg.edge);
+            DrawMesh(p, g_borgMesh);
+        } else {
+            for (int k = 0; k < kBorgChunks; k++) {
+                float pos[3], r[3], u[3], f[3], size;
+                BorgChunk(k, pos, r, u, f, size);
+                place(pos, r, u, f, size);
+                DrawMesh(p, g_chunkMesh);
+            }
+        }
+        glUniform4f(glGetUniformLocation(p, "uOccluder"), 0, 0, 0, 0);
+        glUniform1f(glGetUniformLocation(p, "uRoll"), viewRoll);
+        glUniform1f(glGetUniformLocation(p, "uScale"), scale);
+    }
+
     // Ion trails streaming back from the exhausts: ribbons turned to face the
     // camera, longer and brighter the harder the engines work. Their
     // positions are worked out here, seen from the camera, so the ship's
@@ -1081,6 +1251,132 @@ static void DrawShip(Scene& sc)
     glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), tv->n);
     glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, sizeof(ShipVertex), &tv->m);
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)trail.size());
+
+    // The ship firing on a Borg cube, and the cube blowing up, worked out
+    // seen from the camera.
+    if (bg.on && (bg.fireTime >= 0.0f || bg.stage == 2)) {
+        static std::vector<ShipVertex> glow;  // kept, so its memory is reused from frame to frame
+        glow.clear();
+        // A point on the ship (model units), where it is drawn.
+        auto onShip = [&](const float* m, float* out) {
+            for (int i = 0; i < 3; i++) out[i] = at[i] + (r2[i] * m[0] + u2[i] * m[1] + fwd[i] * m[2]) * scale;
+        };
+        // A square of light round c, across a and b (half its width along each).
+        auto square = [&](const float* c, const float* a, const float* b, float kind) {
+            ShipVertex v[4];
+            const float corner[4][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+            for (int k = 0; k < 4; k++) {
+                for (int i = 0; i < 3; i++) v[k].p[i] = c[i] + a[i] * corner[k][0] + b[i] * corner[k][1];
+                v[k].n[0] = corner[k][0];
+                v[k].n[1] = corner[k][1];
+                v[k].n[2] = kind;
+                v[k].m = kGlow;
+            }
+            glow.insert(glow.end(), {v[0], v[1], v[2], v[0], v[2], v[3]});
+        };
+        // Turned to face the camera, with radius size, but never less than a
+        // couple of pixels across.
+        auto sprite = [&](const float* c, float size, int kind, float age) {
+            const float d = sqrtf(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) + 1e-6f;
+            size = std::max(size, d * 2.5f / (kFocal * sc.H));
+            float view[3] = {c[0] / d, c[1] / d, c[2] / d}, any[3] = {0, 1, 0}, a[3], b[3];
+            Flight::Cross(any, view, a);
+            Flight::Normalize(a);
+            Flight::Cross(view, a, b);
+            for (int i = 0; i < 3; i++) {
+                a[i] *= size;
+                b[i] *= size;
+            }
+            square(c, a, b, kind + std::clamp(age, 0.0f, 0.999f));
+        };
+        const float ft = bg.fireTime;
+        if (ft >= 0.0f && bg.stage < 2) {
+            // Phaser bursts, from either side of the saucer by turns, raking
+            // across the cube.
+            for (int j = 0; j * kPhaserEvery <= kBarrage; j++) {
+                const float t0 = j * kPhaserEvery, t1 = t0 + kPhaserLength;
+                if (ft < t0 || ft > t1) continue;
+                const float u = (ft - t0) / kPhaserLength;
+                const float strength = std::min(1.0f, std::min(ft - t0, t1 - ft) / 0.08f);
+                const float emitter[3] = {j % 2 ? 0.22f : -0.22f, -0.05f, 0.4f};
+                float from[3], local[3], to[3];
+                onShip(emitter, from);
+                fl.BorgStrike(j + 300, (j % 2 ? 1.0f : -1.0f) * (u * 2.0f - 1.0f), local);
+                fl.BorgPoint(local, to);
+                // A ribbon from the ship to the cube, turned to face the camera.
+                float dir[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
+                auto across = [&](const float* q, float* out) {
+                    const float d = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
+                    float v[3] = {-q[0], -q[1], -q[2]};
+                    Flight::Cross(dir, v, out);
+                    Flight::Normalize(out);
+                    const float half = std::max(kPodR * scale * 0.5f, d * 2.0f / (kFocal * sc.H));
+                    for (int i = 0; i < 3; i++) out[i] *= half;
+                };
+                float wa[3], wb[3];
+                across(from, wa);
+                across(to, wb);
+                ShipVertex v0 = {{from[0] - wa[0], from[1] - wa[1], from[2] - wa[2]}, {0, -1, strength}, kPhaser};
+                ShipVertex v1 = {{from[0] + wa[0], from[1] + wa[1], from[2] + wa[2]}, {0, 1, strength}, kPhaser};
+                ShipVertex v2 = {{to[0] + wb[0], to[1] + wb[1], to[2] + wb[2]}, {1, 1, strength}, kPhaser};
+                ShipVertex v3 = {{to[0] - wb[0], to[1] - wb[1], to[2] - wb[2]}, {1, -1, strength}, kPhaser};
+                glow.insert(glow.end(), {v0, v1, v2, v0, v2, v3});
+                sprite(to, bg.edge * (0.12f + 0.04f * sinf(fl.t * 40.0f)), 3, 0.3f);
+                sprite(from, kPodR * scale * 1.5f, 3, 0.2f);
+            }
+            // Photon torpedoes, one after another from tubes either side of
+            // the bow, each flaring as it strikes.
+            for (int k = 0; k * kTorpedoEvery <= kBarrage; k++) {
+                const float u = (ft - k * kTorpedoEvery) / kTorpedoFlight;
+                if (u < 0.0f || u > 1.0f + 0.6f / kTorpedoFlight) continue;
+                float local[3], to[3];
+                fl.BorgStrike(k, 0.0f, local);
+                fl.BorgPoint(local, to);
+                if (u < 1.0f) {
+                    const float tube[3] = {k % 2 ? 0.035f : -0.035f, -0.03f, 0.57f};
+                    float launch[3], at2[3];
+                    onShip(tube, launch);
+                    for (int i = 0; i < 3; i++) at2[i] = launch[i] + (to[i] - launch[i]) * u;
+                    sprite(at2, bg.edge * 0.05f, 0, 0.0f);
+                } else {
+                    sprite(to, bg.edge * 0.4f, 3, (u - 1.0f) * kTorpedoFlight / 0.6f);
+                }
+            }
+            // Where torpedoes have struck, it burns.
+            for (int k = 0; k < bg.damaged; k++) {
+                float at2[3];
+                fl.BorgPoint(bg.damage[k], at2);
+                const float flicker = 0.75f + 0.25f * sinf(fl.t * (9.0f + 5.0f * Hash01(k, 31)) + k);
+                sprite(at2, bg.edge * 0.08f * flicker, 3, 0.45f);
+            }
+        }
+        if (bg.stage == 2) {
+            // The blast: a swelling fireball, a shock wave spreading out
+            // round the cube's middle, and sparks flung far and wide.
+            const float t = bg.blastTime;
+            if (t < 4.0f) sprite(bg.pos, bg.edge * (0.5f + 2.5f * (1.0f - expf(-t * 1.8f))), 1, t / 4.0f);
+            if (t < 2.5f) {
+                float a[3], b[3];
+                const float rr = bg.edge * (0.3f + t * 4.0f);
+                for (int i = 0; i < 3; i++) {
+                    a[i] = bg.frame[0][i] * rr;
+                    b[i] = bg.frame[2][i] * rr;
+                }
+                square(bg.pos, a, b, 2 + t / 2.5f);
+            }
+            for (int k = 0; k < kBorgSparks; k++) {
+                const float life = 1.5f + 2.0f * Hash01(k, 21);
+                if (t > life) continue;
+                float dir[3] = {Hash01(k, 22) - 0.5f, Hash01(k, 23) - 0.5f, Hash01(k, 24) - 0.5f}, q[3];
+                Flight::Normalize(dir);
+                const float out = bg.edge * (0.8f + 2.5f * Hash01(k, 25)) * t;
+                for (int i = 0; i < 3; i++) q[i] = bg.pos[i] + dir[i] * out;
+                sprite(q, bg.edge * 0.03f, 3, t / life);
+            }
+        }
+        glUniform1f(glGetUniformLocation(p, "uRoll"), fl.roll);
+        DrawMesh(p, glow);
+    }
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
 

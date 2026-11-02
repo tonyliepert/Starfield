@@ -34,6 +34,13 @@ A Windows screensaver: a starship flying through deep space at warp.
   tether; then it lifts off and heads away. Of the rest, half are wary of
   visitors: once the ship has settled into orbit they send up two spinning
   guide buoys to fly alongside it and escort it away.
+- Now and then (about one inhabited world in seven) a dark grey Borg cube,
+  five times the ship's length, is circling the planet. As soon as the ship
+  has it in sight in orbit, it opens fire. The cube breaks orbit and flees,
+  and the ship gives chase, raking it with phasers and pouring photon
+  torpedoes into it, each hit leaving it burning, until it blows apart, the
+  whole screen flashing blue-white. The ship then heads back to orbit the
+  planet and look for survivors.
 - Original music, synthesized at startup, crossfades between a cruise theme
   and a calmer orbit theme. If `geoffharvey-starfleet-command-150605.mp3` (or
   whatever `kTrackFile` in `src/music.h` names) is beside the program, it
@@ -50,7 +57,9 @@ build.bat
 
 This builds `Starfield.scr` (the screensaver) and `Starfield.exe` (the same
 program, which opens in a window when double-clicked; Esc closes it, and S
-saves a JPEG of the screen in your Downloads folder).
+saves a JPEG of the screen in your Downloads folder). It also builds
+`StarfieldBorg.exe`, the same program again, which meets a Borg cube at
+every planet it visits.
 
 To install it as your screensaver, right-click `Starfield.scr` and choose
 **Install**.
@@ -61,6 +70,7 @@ To install it as your screensaver, right-click `Starfield.scr` and choose
 - `/p <hwnd>` run in the Screen Saver Settings preview
 - `/c` settings (there are none)
 - `/w` run in a resizable window
+- `/b` run in a window, with a Borg cube at every planet the ship visits
 - `/x <name> [seconds]` fly for that many seconds, then save three frames as
   `<name>_0.bmp` .. `<name>_2.bmp`
 
